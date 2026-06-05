@@ -1,0 +1,2576 @@
+#!/usr/bin/env python3
+"""
+视频处理工具 - 合并版
+功能：画中画、视频套框、横转竖
+GPU加速：NVENC H264/H265
+"""
+import os, sys, subprocess, json, time, re, threading
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
+import numpy as np
+
+# 拖拽支持
+try:
+    import tkinterdnd2
+    HAS_DND = True
+except ImportError:
+    HAS_DND = False
+    print("⚠️ tkinterdnd2 未安装，拖拽功能不可用")
+
+# ═══════════════════════════════════════
+#  颜色常量（B站风格）
+# ═══════════════════════════════════════
+C = {
+    "bg": "#F1F2F3", "card": "#FFFFFF", "primary": "#00AEEC",
+    "primary_dark": "#0091D4", "primary_light": "#E8F4FD",
+    "success": "#00B578", "warning": "#FF9F18", "danger": "#FF3B30",
+    "text": "#1D2129", "text2": "#6B7280", "text3": "#9CA3AF",
+    "border": "#E5E7EB",
+}
+
+
+class VideoProcessor:
+    """综合视频处理工具"""
+
+    def __init__(self, root):
+        self.root = root
+        self.root.title("⚡ 视频处理工具")
+        self.root.geometry("900x750")
+        
+        # 初始化拖拽支持
+        self._init_drag_drop()
+        self.root.configure(bg=C["bg"])
+
+        self.ffmpeg = self._find_ffmpeg()
+        self.gpu = self._check_gpu()
+        self._processing = False
+        self._cancel = False
+        self._total_duration = 0  # 当前任务总时长（秒）
+        self._encode_start_time = 0  # 编码开始时间
+        self._current_proc = None  # 当前ffmpeg进程（用于取消）
+
+        # 配置文件路径（与脚本同目录）
+        self._config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "video_processor_config.json")
+
+        # 初始化所有模式的数据（避免切换页面前访问报错）
+        self.frame_template = None
+        self.frame_roi = None
+        self.frame_videos = []
+        self.frame_folder_name = None  # 文件夹合并时的文件夹名
+        self.frame_folder_groups = []  # [{\"name\": \"文件夹名\", \"videos\": [路径]}]
+        self.intro_video = None  # 片头视频
+        self.outro_video = None  # 片尾视频
+        self.pip_template = None
+        self.pip_regions = {}
+        self.pip_lists = {}
+        self.center_folder_groups = []  # [{"name": "文件夹名", "videos": [路径]}]
+        self.pip_folder_name = None  # 导入文件夹时的文件夹名
+        self.rotate_videos = []
+        self.rotate_folder_groups = []  # [{\"name\": \"文件夹名\", \"videos\": [路径]}]
+
+        self._build()
+        self._load_config()
+
+    # ═══════════════════════════════════════
+    #  FFmpeg / GPU 检测
+    # ═══════════════════════════════════════
+    def _find_ffmpeg(self):
+        for p in ["ffmpeg", r"C:\ffmpeg\bin\ffmpeg.exe", r"C:\Program Files\ffmpeg\bin\ffmpeg.exe"]:
+            try:
+                subprocess.run([p, "-version"], capture_output=True, timeout=5)
+                return p
+            except:
+                continue
+        return "ffmpeg"
+
+    def _check_gpu(self):
+        try:
+            r = subprocess.run([self.ffmpeg, "-encoders"], capture_output=True, text=True, timeout=5)
+            return "hevc_nvenc" in r.stdout
+        except:
+            return False
+
+    def _get_video_info(self, path):
+        try:
+            r = subprocess.run(
+                [self.ffmpeg, "-i", path],
+                capture_output=True, timeout=10
+            )
+            # 用utf-8解码，失败则忽略（Windows默认GBK会崩）
+            text = r.stdout.decode("utf-8", errors="replace") + r.stderr.decode("utf-8", errors="replace")
+            info = {}
+            for line in text.splitlines():
+                if "Duration:" in line:
+                    m = re.search(r"Duration:\s*(\d+):(\d+):(\d+)\.(\d+)", line)
+                    if m:
+                        info["duration"] = int(m[1])*3600 + int(m[2])*60 + int(m[3]) + int(m[4])/100
+                if "Stream" in line and "Video:" in line:
+                    # 至少2位数字，避免匹配到0x1等流索引
+                    m = re.search(r"(\d{2,})x(\d{2,})", line)
+                    if m:
+                        info["width"] = int(m[1])
+                        info["height"] = int(m[2])
+                    m2 = re.search(r"(\d+\.?\d*)\s*fps", line)
+                    if m2:
+                        info["fps"] = m2[1]
+                    # 解析像素格式
+                    if "yuv420p10le" in line or "yuv420p10" in line:
+                        info["pix_fmt"] = "yuv420p10le"
+                    elif "yuv420p" in line:
+                        info["pix_fmt"] = "yuv420p"
+                    else:
+                        info["pix_fmt"] = "yuv420p"
+            return info
+        except:
+            return {}
+
+    # ═══════════════════════════════════════
+    #  UI 构建
+    # ═══════════════════════════════════════
+    def _build(self):
+        # Header
+        hdr = tk.Frame(self.root, bg=C["primary"])
+        hdr.pack(fill=tk.X)
+        tk.Label(hdr, text="⚡ 视频处理工具", font=("微软雅黑", 16, "bold"),
+                 bg=C["primary"], fg="white").pack(padx=20, pady=10, anchor="w")
+
+        # GPU 状态
+        gpu_txt = "✅ NVENC GPU加速" if self.gpu else "⚠️ CPU模式"
+        gpu_clr = C["success"] if self.gpu else C["warning"]
+        tk.Label(hdr, text=gpu_txt, font=("微软雅黑", 9), bg=gpu_clr, fg="white",
+                 padx=8, pady=2).pack(side=tk.RIGHT, padx=20)
+
+        # 模式选择卡
+        card = tk.Frame(self.root, bg=C["card"], padx=16, pady=12)
+        card.pack(fill=tk.X, padx=20, pady=(12, 6))
+        tk.Label(card, text="选择处理模式", font=("微软雅黑", 12, "bold"),
+                 bg=C["card"], fg=C["text"]).pack(anchor="w")
+
+        self.mode_var = tk.StringVar(value="套框")
+        modes = [("🖼 视频套框", "套框"), ("📺 画中画", "画中画"), ("🔄 横转竖", "横转竖")]
+        mf = tk.Frame(card, bg=C["card"])
+        mf.pack(fill=tk.X, pady=(8, 0))
+        for txt, val in modes:
+            b = tk.Radiobutton(mf, text=txt, variable=self.mode_var, value=val,
+                               font=("微软雅黑", 11), bg=C["card"], fg=C["text"],
+                               activebackground=C["primary_light"], indicatoron=0,
+                               padx=20, pady=8, relief="flat", borderwidth=2,
+                               command=self._switch_mode)
+            b.pack(side=tk.LEFT, padx=(0, 10))
+
+        # ═══ 动态内容区 ═══
+        self.content = tk.Frame(self.root, bg=C["bg"])
+        self.content.pack(fill=tk.BOTH, expand=True, padx=20, pady=6)
+
+        # 底部控制区
+        bot = tk.Frame(self.root, bg=C["bg"])
+        bot.pack(fill=tk.X, padx=20, pady=(0, 12))
+
+        # 输出目录
+        of = tk.Frame(bot, bg=C["card"], padx=12, pady=8)
+        of.pack(fill=tk.X)
+        tk.Label(of, text="💾 输出目录", font=("微软雅黑", 10, "bold"),
+                 bg=C["card"], fg=C["text"]).pack(anchor="w")
+        orow = tk.Frame(of, bg=C["card"])
+        orow.pack(fill=tk.X, pady=(4, 0))
+        self.out_dir = tk.StringVar(value=r"E:\视频")
+        tk.Entry(orow, textvariable=self.out_dir, font=("微软雅黑", 10),
+                 bg="#F6F8FA", relief="flat", highlightthickness=1,
+                 highlightcolor=C["primary"], highlightbackground=C["border"]
+                 ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        tk.Button(orow, text="浏览", font=("微软雅黑", 9), bg="#E5E7EB",
+                  relief="flat", padx=8, cursor="hand2",
+                  command=lambda: self.out_dir.set(filedialog.askdirectory() or self.out_dir.get())
+                  ).pack(side=tk.LEFT, padx=8)
+
+        # 编码设置
+        ef = tk.Frame(bot, bg=C["card"], padx=12, pady=4)
+        ef.pack(fill=tk.X, pady=(4, 0))
+        erow = tk.Frame(ef, bg=C["card"])
+        erow.pack(fill=tk.X)
+        tk.Label(erow, text="编码:", font=("微软雅黑", 10), bg=C["card"], fg=C["text"]).pack(side=tk.LEFT)
+        self.codec_var = tk.StringVar(value="hevc_nvenc" if self.gpu else "libx265")
+        codecs = ["hevc_nvenc", "h264_nvenc", "libx265", "libx264"]
+        ttk.Combobox(erow, textvariable=self.codec_var, values=codecs,
+                     state="readonly", width=16).pack(side=tk.LEFT, padx=6)
+        tk.Label(erow, text="码率:", font=("微软雅黑", 10), bg=C["card"], fg=C["text"]).pack(side=tk.LEFT, padx=(16, 0))
+        self.bitrate_var = tk.StringVar(value="8000")
+        tk.Entry(erow, textvariable=self.bitrate_var, font=("微软雅黑", 10),
+                 width=8, bg="#F6F8FA", relief="flat").pack(side=tk.LEFT, padx=6)
+        tk.Label(erow, text="kbps", font=("微软雅黑", 10), bg=C["card"], fg=C["text2"]).pack(side=tk.LEFT)
+
+        # 合并选项
+        erow2 = tk.Frame(ef, bg=C["card"])
+        erow2.pack(fill=tk.X, pady=(6, 0))
+        self.merge_var = tk.BooleanVar(value=False)
+        self.segment_var = tk.BooleanVar(value=False)  # 是否启用分段处理
+        self.segment_minutes_var = tk.IntVar(value=90)  # 分段时长(分钟)
+        self.batch_output_var = tk.BooleanVar(value=False)  # 是否分批次输出
+        self.batch_episodes_var = tk.IntVar(value=12)  # 每批集数
+        tk.Checkbutton(erow2, text="先合并再处理", variable=self.merge_var,
+                       font=("微软雅黑", 10), bg=C["card"], fg=C["text"],
+                       command=self._toggle_merge).pack(side=tk.LEFT)
+        self.merge_mode = tk.StringVar(value="count")
+        tk.Radiobutton(erow2, text="按数量", variable=self.merge_mode, value="count",
+                       font=("微软雅黑", 9), bg=C["card"], fg=C["text"],
+                       command=self._toggle_merge).pack(side=tk.LEFT, padx=(12, 0))
+        self.merge_count = tk.IntVar(value=2)
+        self.merge_count_spin = tk.Spinbox(erow2, from_=2, to=20, textvariable=self.merge_count, width=4,
+                   font=("微软雅黑", 10), state="disabled")
+        self.merge_count_spin.pack(side=tk.LEFT, padx=2)
+        tk.Label(erow2, text="个合1", font=("微软雅黑", 9), bg=C["card"], fg=C["text2"]).pack(side=tk.LEFT)
+        tk.Radiobutton(erow2, text="以文件夹合1", variable=self.merge_mode, value="folder",
+                       font=("微软雅黑", 9), bg=C["card"], fg=C["text"],
+                       command=self._toggle_merge).pack(side=tk.LEFT, padx=(12, 0))
+
+        erow3 = tk.Frame(ef, bg=C["card"])
+        erow3.pack(fill=tk.X, pady=(6, 0))
+        self.game_mode = tk.BooleanVar(value=False)
+        tk.Checkbutton(erow3, text="🎮 游戏模式", variable=self.game_mode,
+                       font=("微软雅黑", 10), bg=C["card"], fg=C["text"]).pack(side=tk.LEFT)
+        tk.Label(erow3, text="片头:", font=("微软雅黑", 10), bg=C["card"], fg=C["text"]).pack(side=tk.LEFT, padx=(20, 0))
+        self.intro_label = tk.Label(erow3, text="无", font=("微软雅黑", 9), bg=C["card"], fg=C["text3"])
+        self.intro_label.pack(side=tk.LEFT, padx=2)
+        tk.Button(erow3, text="选择", font=("微软雅黑", 9), bg="#E5E7EB", relief="flat",
+                  padx=6, cursor="hand2", command=self._select_intro).pack(side=tk.LEFT, padx=2)
+        tk.Button(erow3, text="×", font=("微软雅黑", 9), bg="#E5E7EB", relief="flat",
+                  padx=4, cursor="hand2", command=lambda: self._clear_intro_outro("intro")).pack(side=tk.LEFT, padx=(0, 12))
+        tk.Label(erow3, text="片尾:", font=("微软雅黑", 10), bg=C["card"], fg=C["text"]).pack(side=tk.LEFT)
+        self.outro_label = tk.Label(erow3, text="无", font=("微软雅黑", 9), bg=C["card"], fg=C["text3"])
+        self.outro_label.pack(side=tk.LEFT, padx=2)
+        tk.Button(erow3, text="选择", font=("微软雅黑", 9), bg="#E5E7EB", relief="flat",
+                  padx=6, cursor="hand2", command=self._select_outro).pack(side=tk.LEFT, padx=2)
+        tk.Button(erow3, text="×", font=("微软雅黑", 9), bg="#E5E7EB", relief="flat",
+                  padx=4, cursor="hand2", command=lambda: self._clear_intro_outro("outro")).pack(side=tk.LEFT)
+
+        # 按钮 + 进度
+        bf = tk.Frame(bot, bg=C["card"], padx=12, pady=10)
+        bf.pack(fill=tk.X, pady=(6, 0))
+        self.btn_start = tk.Button(bf, text="🚀 开始处理", font=("微软雅黑", 12, "bold"),
+                                   bg=C["success"], fg="white", relief="flat",
+                                   padx=20, pady=8, cursor="hand2", command=self._start)
+        self.btn_start.pack(side=tk.LEFT)
+        self.btn_stop = tk.Button(bf, text="⏹ 停止", font=("微软雅黑", 11),
+                                  bg=C["danger"], fg="white", relief="flat",
+                                  padx=14, pady=8, cursor="hand2", command=self._stop,
+                                  state="disabled")
+        self.btn_stop.pack(side=tk.LEFT, padx=10)
+
+        self.progress = ttk.Progressbar(bf, mode="determinate", maximum=100)
+        self.progress.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=10)
+
+        self.lbl_eta = tk.Label(bf, text="", font=("Consolas", 10, "bold"),
+                                bg=C["card"], fg=C["primary"], padx=6)
+        self.lbl_eta.pack(side=tk.LEFT)
+
+        self.lbl_status = tk.Label(bot, text="就绪 · 选择文件后点击开始",
+                                   font=("微软雅黑", 10), bg=C["primary_light"],
+                                   fg=C["primary"], padx=12, pady=6)
+        self.lbl_status.pack(fill=tk.X, pady=(6, 0))
+
+        # 日志
+        self.log_text = tk.Text(bot, height=4, font=("Consolas", 9), bg="#F6F8FA",
+                                fg=C["text"], relief="flat", wrap=tk.WORD)
+        self.log_text.pack(fill=tk.X, pady=(6, 0))
+
+        # 初始化默认页面
+        self._switch_mode()
+
+    # ═══════════════════════════════════════
+    #  模式切换
+    # ═══════════════════════════════════════
+    def _switch_mode(self):
+        for w in self.content.winfo_children():
+            w.destroy()
+        mode = self.mode_var.get()
+        if mode == "套框":
+            self._build_frame_page()
+        elif mode == "画中画":
+            self._build_pip_page()
+        elif mode == "横转竖":
+            self._build_rotate_page()
+
+    # ═══════════════════════════════════════
+    #  页面1: 视频套框
+    # ═══════════════════════════════════════
+    def _build_frame_page(self):
+        # 不重置数据，保留已加载的配置
+
+        card = tk.Frame(self.content, bg=C["card"], padx=16, pady=12)
+        card.pack(fill=tk.X, pady=(0, 6))
+
+        # 模板
+        tk.Label(card, text="🖼 模板图片（背景框）", font=("微软雅黑", 11, "bold"),
+                 bg=C["card"], fg=C["text"]).pack(anchor="w")
+        tr = tk.Frame(card, bg=C["card"])
+        tr.pack(fill=tk.X, pady=4)
+        self.frame_template_label = tk.Label(tr, text="未选择", font=("微软雅黑", 10),
+                                             bg="#F6F8FA", fg=C["text3"], anchor="w")
+        self.frame_template_label.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=4)
+        tk.Button(tr, text="选择模板", font=("微软雅黑", 10), bg=C["primary"], fg="white",
+                  relief="flat", padx=10, cursor="hand2",
+                  command=self._frame_load_template).pack(side=tk.LEFT, padx=8)
+        tk.Button(tr, text="框选区域", font=("微软雅黑", 10), bg=C["warning"], fg="white",
+                  relief="flat", padx=10, cursor="hand2",
+                  command=self._frame_select_roi).pack(side=tk.LEFT)
+        tk.Button(tr, text="💾 保存", font=("微软雅黑", 10), bg=C["success"], fg="white",
+                  relief="flat", padx=10, cursor="hand2",
+                  command=lambda: (self._save_config(), messagebox.showinfo("保存", "套框模板和区域设置已保存！"))).pack(side=tk.LEFT, padx=4)
+        self.frame_roi_label = tk.Label(card, text="", font=("微软雅黑", 9),
+                                        bg=C["card"], fg=C["text2"])
+        self.frame_roi_label.pack(anchor="w", pady=2)
+
+        # 视频列表
+        vf = tk.Frame(self.content, bg=C["card"], padx=16, pady=12)
+        vf.pack(fill=tk.BOTH, expand=True)
+        tk.Label(vf, text="🎬 视频文件", font=("微软雅黑", 11, "bold"),
+                 bg=C["card"], fg=C["text"]).pack(anchor="w")
+
+        vrow = tk.Frame(vf, bg=C["card"])
+        vrow.pack(fill=tk.BOTH, expand=True, pady=4)
+        self.frame_listbox = tk.Listbox(vrow, height=6, font=("微软雅黑", 9))
+        self.frame_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        sb = tk.Scrollbar(vrow, command=self.frame_listbox.yview)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        self.frame_listbox.config(yscrollcommand=sb.set)
+
+        bb = tk.Frame(vf, bg=C["card"])
+        bb.pack(fill=tk.X, pady=4)
+        for txt, cmd in [("添加视频", self._frame_add_videos), ("导入文件夹", self._frame_import_folder),
+                         ("📂 文件夹合并", self._frame_folder_merge),
+                         ("📂 批量文件夹合并", self._frame_batch_folder_merge),
+                         ("移除选中", self._frame_remove), ("清空", self._frame_clear)]:
+            tk.Button(bb, text=txt, font=("微软雅黑", 9), bg="#E5E7EB", fg=C["text"],
+                      relief="flat", padx=10, pady=4, cursor="hand2", command=cmd).pack(side=tk.LEFT, padx=(0, 6))
+
+        # 恢复已加载的数据显示
+        if self.frame_template:
+            ext = os.path.splitext(self.frame_template)[1].lower()
+            is_video = ext in ('.mp4', '.mkv', '.avi', '.flv', '.ts')
+            label = f"{'🎬' if is_video else '🖼'} {os.path.basename(self.frame_template)}"
+            self.frame_template_label.config(text=label, fg=C["text"])
+        if self.frame_roi:
+            x, y, w, h = self.frame_roi
+            # 确保分辨率为偶数（H265编码要求）
+            w = w // 2 * 2
+            h = h // 2 * 2
+            self.frame_roi_label.config(text=f"✅ 已框选: x={x} y={y} w={w} h={h}")
+        for f in self.frame_videos:
+            self.frame_listbox.insert(tk.END, os.path.basename(f))
+
+    def _frame_load_template(self):
+        p = filedialog.askopenfilename(filetypes=[("媒体文件", "*.png *.jpg *.jpeg *.bmp *.mp4 *.mkv *.avi *.flv *.ts")])
+        if p:
+            self.frame_template = p
+            ext = os.path.splitext(p)[1].lower()
+            is_video = ext in ('.mp4', '.mkv', '.avi', '.flv', '.ts')
+            label = f"{'🎬' if is_video else '🖼'} {os.path.basename(p)}"
+            self.frame_template_label.config(text=label, fg=C["text"])
+            self._save_config()
+    def _frame_select_roi(self):
+        if not self.frame_template:
+            messagebox.showwarning("提示", "请先选择模板图片"); return
+        try:
+            import cv2
+            ext = os.path.splitext(self.frame_template)[1].lower()
+            is_video = ext in ('.mp4', '.mkv', '.avi', '.flv', '.ts')
+
+            if is_video:
+                # 视频模板：用OpenCV读取第一帧
+                cap = cv2.VideoCapture(self.frame_template)
+                ret, img = cap.read()
+                cap.release()
+                if not ret:
+                    messagebox.showerror("错误", "无法读取视频模板第一帧"); return
+            else:
+                # 图片模板：用PIL读取并纠正EXIF旋转
+                from PIL import Image, ExifTags
+                pil_img = Image.open(self.frame_template)
+                try:
+                    exif = pil_img._getexif()
+                    if exif:
+                        for tag, val in exif.items():
+                            if ExifTags.TAGS.get(tag) == 'Orientation':
+                                if val == 3: pil_img = pil_img.rotate(180, expand=True)
+                                elif val == 6: pil_img = pil_img.rotate(270, expand=True)
+                                elif val == 8: pil_img = pil_img.rotate(90, expand=True)
+                                break
+                except: pass
+                img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+
+            if img is None:
+                messagebox.showerror("错误", "无法读取模板图片"); return
+            # 全屏显示
+            screen_w = self.root.winfo_screenwidth()
+            screen_h = self.root.winfo_screenheight()
+            h, w = img.shape[:2]
+            scale = min((screen_w - 40) / w, (screen_h - 80) / h, 1.0)
+            disp = cv2.resize(img, (int(w * scale), int(h * scale)))
+
+            # 操作提示
+            messagebox.showinfo("框选步骤",
+                "1. 用鼠标在图片上拖拽画出矩形框\n"
+                "2. 按 Enter 确认\n"
+                "3. 按 ESC 取消")
+
+            roi = cv2.selectROI("用鼠标拖拽框选视频区域 → 按Enter确认", disp, showCrosshair=True)
+            cv2.destroyAllWindows()
+            if roi[2] > 0 and roi[3] > 0:
+                self.frame_roi = (int(roi[0]/scale), int(roi[1]/scale), int(roi[2]/scale), int(roi[3]/scale))
+                x, y, w2, h2 = self.frame_roi
+                self.frame_roi_label.config(text=f"✅ 已框选: x={x} y={y} w={w2} h={h2}")
+                self._save_config()
+            else:
+                messagebox.showwarning("提示", "未选择区域")
+        except ImportError:
+            messagebox.showerror("错误", "需要安装opencv: pip install opencv-python")
+
+
+    def _init_drag_drop(self):
+        """初始化拖拽支持"""
+        if HAS_DND:
+            try:
+                # 注册拖拽目标
+                self.root.drop_target_register(tkinterdnd2.DND_FILES)
+                self.root.dnd_bind('<<Drop>>', self._on_drop)
+                self._log("✅ 拖拽功能已启用")
+            except Exception as e:
+                self._log(f"⚠️ 拖拽初始化失败: {e}")
+        else:
+            self._log("⚠️ 拖拽功能不可用，请安装 tkinterdnd2")
+    
+    def _setup_drag_drop(self):
+        """设置拖拽绑定"""
+        if HAS_DND:
+            try:
+                # 为正片区的 Listbox 绑定拖拽
+                self.frame_listbox.drop_target_register(tkinterdnd2.DND_FILES)
+                self.frame_listbox.dnd_bind('<<Drop>>', self._on_frame_drop)
+            except Exception as e:
+                self._log(f"⚠️ Listbox 拖拽绑定失败: {e}")
+    
+    def _on_drop(self, event):
+        """处理拖拽事件"""
+        if event.data:
+            # 解析拖拽的文件/文件夹路径
+            files = self._parse_drop_data(event.data)
+            self._process_dropped_items(files)
+    
+    def _on_frame_drop(self, event):
+        """处理正片区的拖拽事件"""
+        if event.data:
+            files = self._parse_drop_data(event.data)
+            self._process_dropped_items(files)
+    
+    def _parse_drop_data(self, data):
+        """解析拖拽数据"""
+        # tkinterdnd2 返回的路径格式可能是：
+        # - 单个文件: "C:/path/to/file.mp4"
+        # - 多个文件: "C:/path/to/file1.mp4 C:/path/to/file2.mp4"
+        # - 带空格的路径: "{C:/path with spaces/file.mp4}"
+        
+        files = []
+        if isinstance(data, str):
+            # 处理带大括号的路径（包含空格）
+            import re
+            # 匹配 {path} 或 简单路径
+            parts = re.findall(r'\{([^}]+)\}|([^\s]+)', data)
+            for part in parts:
+                path = part[0] if part[0] else part[1]
+                if path:
+                    files.append(path)
+        
+        return files
+    
+    def _process_dropped_items(self, items):
+        """处理拖拽的项目"""
+        if not items:
+            return
+        
+        # 分离文件夹和文件
+        folders = []
+        video_files = []
+        exts = ('.mp4', '.mkv', '.avi', '.flv', '.ts')
+        
+        for item in items:
+            if os.path.isdir(item):
+                # 检查文件夹内是否有视频文件
+                videos = [f for f in os.listdir(item) if f.lower().endswith(exts)]
+                if videos:
+                    folders.append(item)
+                else:
+                    self._log(f"⚠️ 文件夹内没有视频文件: {os.path.basename(item)}")
+            elif os.path.isfile(item) and item.lower().endswith(exts):
+                video_files.append(item)
+        
+        # 处理文件夹 - 自动添加到批量文件夹合并
+        if folders:
+            for folder in folders:
+                folder_name = os.path.basename(folder)
+                folder_videos = sorted([os.path.join(folder, f) for f in os.listdir(folder) if f.lower().endswith(exts)])
+                
+                # 检查是否已经添加过
+                if not any(g['name'] == folder_name for g in self.frame_folder_groups):
+                    self.frame_folder_groups.append({
+                        "name": folder_name,
+                        "videos": folder_videos
+                    })
+                    self.frame_listbox.insert(tk.END, f"📁 {folder_name} ({len(folder_videos)}个视频)")
+                    self._log(f"📁 拖拽添加文件夹: {folder_name} ({len(folder_videos)}个视频)")
+                else:
+                    self._log(f"⚠️ 文件夹已存在: {folder_name}")
+            
+            self._log(f"📁 共添加{len(folders)}个文件夹，处理时自动逐个合并")
+            self._save_config()
+        
+        # 处理视频文件 - 正常添加
+        if video_files:
+            for video in video_files:
+                if video not in self.frame_videos:
+                    self.frame_videos.append(video)
+                    self.frame_listbox.insert(tk.END, os.path.basename(video))
+                    self._log(f"🎬 拖拽添加视频: {os.path.basename(video)}")
+            
+            self._save_config()
+        
+        # 更新状态
+        if folders or video_files:
+            total_folders = len(self.frame_folder_groups)
+            total_videos = len(self.frame_videos)
+            self._log(f"📊 当前: {total_folders}个文件夹, {total_videos}个视频")
+    
+    def _frame_add_videos(self):
+        files = filedialog.askopenfilenames(filetypes=[("视频", "*.mp4 *.mkv *.avi *.flv *.ts")])
+        for f in files:
+            self.frame_videos.append(f)
+            self.frame_listbox.insert(tk.END, os.path.basename(f))
+        if files: self._save_config()
+
+    def _frame_import_folder(self):
+        """导入文件夹：加载文件夹内所有视频，自动合并，以文件夹名命名输出"""
+        d = filedialog.askdirectory()
+        if not d:
+            return
+        exts = ('.mp4', '.mkv', '.avi', '.flv', '.ts')
+        videos = sorted([f for f in os.listdir(d) if f.lower().endswith(exts)])
+        if not videos:
+            messagebox.showwarning("提示", "文件夹内没有视频文件")
+            return
+        # 清空已有列表
+        self.frame_listbox.delete(0, tk.END)
+        self.frame_videos.clear()
+        # 添加视频
+        full_videos = []
+        for v in videos:
+            full = os.path.join(d, v)
+            self.frame_videos.append(full)
+            self.frame_listbox.insert(tk.END, v)
+            full_videos.append(full)
+        # 记录文件夹名
+        folder_name = os.path.basename(d)
+        self.frame_folder_name = folder_name
+        # 自动设置为文件夹组模式，处理时自动合并
+        self.frame_folder_groups.append({"name": folder_name, "videos": full_videos})
+        self._log(f"📂 导入文件夹: {d} ({len(videos)}个视频) → 自动合并模式")
+        self._save_config()
+
+    def _frame_folder_merge(self):
+        """文件夹合并：导入文件夹内所有视频，自动合并为1个，以文件夹名命名"""
+        d = filedialog.askdirectory()
+        if not d:
+            return
+        exts = ('.mp4', '.mkv', '.avi', '.flv', '.ts')
+        videos = sorted([f for f in os.listdir(d) if f.lower().endswith(exts)])
+        if not videos:
+            messagebox.showwarning("提示", "文件夹内没有视频文件")
+            return
+        # 清空已有列表
+        self.frame_listbox.delete(0, tk.END)
+        self.frame_videos.clear()
+        # 添加视频
+        for v in videos:
+            full = os.path.join(d, v)
+            self.frame_videos.append(full)
+            self.frame_listbox.insert(tk.END, v)
+        # 记录文件夹名
+        self.frame_folder_name = os.path.basename(d)
+        # 自动启用合并，合并数=视频总数（全部合并为1个）
+        self.merge_var.set(True)
+        self.merge_count.set(len(videos))
+        self._toggle_merge()
+        self._log(f"📂 文件夹合并: {d} ({len(videos)}个视频 → 合并为1个)")
+        self._save_config()
+    def _frame_batch_folder_merge(self):
+        """批量导入文件夹：只收集文件夹，不合并，点开始处理时再逐文件夹合并"""
+        exts = ('.mp4', '.mkv', '.avi', '.flv', '.ts')
+        while True:
+            d = filedialog.askdirectory(title=f"选择文件夹（已选{len(self.frame_folder_groups)}个，取消结束）")
+            if not d:
+                break
+            folder_videos = sorted([os.path.join(d, f) for f in os.listdir(d) if f.lower().endswith(exts)])
+            if not folder_videos:
+                messagebox.showwarning("提示", f"文件夹内没有视频文件:\n{d}")
+                continue
+            folder_name = os.path.basename(d)
+            self.frame_folder_groups.append({"name": folder_name, "videos": folder_videos})
+            self.frame_listbox.insert(tk.END, f"📁 {folder_name} ({len(folder_videos)}个视频)")
+            self._log(f"📁 添加文件夹: {folder_name} ({len(folder_videos)}个视频)")
+        if self.frame_folder_groups:
+            self._log(f"📁 共添加{len(self.frame_folder_groups)}个文件夹，处理时自动逐个合并")
+            self._save_config()
+
+    def _frame_remove(self):
+        sel = self.frame_listbox.curselection()
+        for i in reversed(sel):
+            self.frame_listbox.delete(i)
+            self.frame_videos.pop(i)
+        if sel: self._save_config()
+
+    def _frame_clear(self):
+        self.frame_listbox.delete(0, tk.END)
+        self.frame_videos.clear()
+        self.frame_folder_groups.clear()
+        self._save_config()
+
+    # ═══════════════════════════════════════
+    #  页面2: 画中画
+    # ═══════════════════════════════════════
+    def _build_pip_page(self):
+        # 不重置数据，保留已加载的配置
+        if not self.pip_regions:
+            self.pip_regions = {}
+        if not self.pip_lists:
+            self.pip_lists = {}
+
+        card = tk.Frame(self.content, bg=C["card"], padx=16, pady=12)
+        card.pack(fill=tk.X, pady=(0, 6))
+
+        # 模板
+        tk.Label(card, text="📺 模板图片（背景）", font=("微软雅黑", 11, "bold"),
+                 bg=C["card"], fg=C["text"]).pack(anchor="w")
+        tr = tk.Frame(card, bg=C["card"])
+        tr.pack(fill=tk.X, pady=4)
+        self.pip_template_label = tk.Label(tr, text="未选择", font=("微软雅黑", 10),
+                                           bg="#F6F8FA", fg=C["text3"], anchor="w")
+        self.pip_template_label.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=4)
+        tk.Button(tr, text="选择模板", font=("微软雅黑", 10), bg=C["primary"], fg="white",
+                  relief="flat", padx=10, cursor="hand2",
+                  command=self._pip_load_template).pack(side=tk.LEFT, padx=8)
+        tk.Button(tr, text="💾 保存", font=("微软雅黑", 10), bg=C["success"], fg="white",
+                  relief="flat", padx=10, cursor="hand2",
+                  command=lambda: (self._save_config(), messagebox.showinfo("保存", "模板和区域设置已保存！"))).pack(side=tk.LEFT, padx=4)
+
+        # 区域选择
+        rr = tk.Frame(card, bg=C["card"])
+        rr.pack(fill=tk.X, pady=4)
+        for name, txt in [("left", "左区域"), ("center", "中区域"), ("right", "右区域")]:
+            btn = tk.Button(rr, text=f"框选{txt}", font=("微软雅黑", 9), bg="#E5E7EB",
+                           fg=C["text"], relief="flat", padx=8, cursor="hand2",
+                           command=lambda n=name: self._pip_select_region(n))
+            btn.pack(side=tk.LEFT, padx=(0, 6))
+        self.pip_region_label = tk.Label(card, text="", font=("微软雅黑", 9),
+                                         bg=C["card"], fg=C["text2"])
+        self.pip_region_label.pack(anchor="w", pady=2)
+
+        # 视频文件（左/中/右）
+        vf = tk.Frame(self.content, bg=C["card"], padx=16, pady=12)
+        vf.pack(fill=tk.BOTH, expand=True)
+
+        # 恢复已加载的数据显示
+        for col, (name, title) in enumerate([("left", "左装饰"), ("center", "正片"), ("right", "右装饰")]):
+            f = tk.Frame(vf, bg=C["card"])
+            f.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10) if col < 2 else 0)
+            tk.Label(f, text=f"🎬 {title}", font=("微软雅黑", 10, "bold"),
+                     bg=C["card"], fg=C["text"]).pack(anchor="w")
+            lb = tk.Listbox(f, height=4, font=("微软雅黑", 8))
+            lb.pack(fill=tk.BOTH, expand=True)
+            # 保留已有的files数据，只更新listbox引用
+            old_files = self.pip_lists.get(name, {}).get("files", [])
+            self.pip_lists[name] = {"listbox": lb, "files": old_files}
+            bb = tk.Frame(f, bg=C["card"])
+            bb.pack(fill=tk.X, pady=2)
+            if name == "center":
+                # 正片：添加"导入文件夹"和"批量文件夹合并"按钮
+                for txt, cmd in [("添加", lambda n=name: self._pip_add(n)),
+                                 ("📂 导入文件夹", lambda n=name: self._pip_import_folder(n)),
+                                 ("📂 批量文件夹合并", lambda n=name: self._pip_batch_folder_merge(n)),
+                                 ("清空", lambda n=name: self._pip_clear(n)),
+                                 ("💾 保存", lambda n=name: (self._save_config(), messagebox.showinfo("保存", f"{title}视频列表已保存！")))]:
+                    tk.Button(bb, text=txt, font=("微软雅黑", 8), bg="#E5E7EB", relief="flat",
+                              padx=6, cursor="hand2", command=cmd).pack(side=tk.LEFT, padx=(0, 4))
+            else:
+                for txt, cmd in [("添加", lambda n=name: self._pip_add(n)), ("清空", lambda n=name: self._pip_clear(n)),
+                                 ("💾 保存", lambda n=name: (self._save_config(), messagebox.showinfo("保存", f"{title}视频列表已保存！")))]:
+                    tk.Button(bb, text=txt, font=("微软雅黑", 8), bg="#E5E7EB", relief="flat",
+                              padx=6, cursor="hand2", command=cmd).pack(side=tk.LEFT, padx=(0, 4))
+
+        # 恢复已加载的数据显示
+        if self.pip_template:
+            self.pip_template_label.config(text=os.path.basename(self.pip_template), fg=C["text"])
+        if self.pip_regions:
+            txts = [f"{k}: {v}" for k, v in self.pip_regions.items()]
+            self.pip_region_label.config(text="✅ " + " | ".join(txts))
+        # 恢复视频列表到新的listbox
+        for name in self.pip_lists:
+            if "listbox" in self.pip_lists[name] and "files" in self.pip_lists[name]:
+                lb = self.pip_lists[name]["listbox"]
+                for f in self.pip_lists[name]["files"]:
+                    lb.insert(tk.END, os.path.basename(f))
+
+        # ── 分段处理选项 ──
+        seg_card = tk.Frame(self.content, bg=C["card"], padx=16, pady=8)
+        seg_card.pack(fill=tk.X, pady=(0, 6))
+        seg_row = tk.Frame(seg_card, bg=C["card"])
+        seg_row.pack(fill=tk.X)
+        tk.Checkbutton(seg_row, text="🔪 超长视频分段处理", variable=self.segment_var,
+                       font=("微软雅黑", 10), bg=C["card"], fg=C["text"],
+                       command=self._toggle_segment).pack(side=tk.LEFT)
+        tk.Label(seg_row, text="  每段时长:", font=("微软雅黑", 10),
+                 bg=C["card"], fg=C["text"]).pack(side=tk.LEFT, padx=(10, 2))
+        self.seg_entry = tk.Entry(seg_row, textvariable=self.segment_minutes_var,
+                                  width=5, font=("微软雅黑", 10))
+        self.seg_entry.pack(side=tk.LEFT)
+        tk.Label(seg_row, text="分钟", font=("微软雅黑", 10),
+                 bg=C["card"], fg=C["text"]).pack(side=tk.LEFT, padx=(2, 0))
+        tk.Label(seg_card, text="💡 超过此时长自动分段处理后合并，建议90-120分钟，避免内存不足",
+                 font=("微软雅黑", 9), bg=C["card"], fg=C["text3"]).pack(anchor="w", pady=(2, 0))
+
+        # ── 分批次输出选项 ──
+        batch_card = tk.Frame(self.content, bg=C["card"], padx=16, pady=8)
+        batch_card.pack(fill=tk.X, pady=(0, 6))
+        batch_row = tk.Frame(batch_card, bg=C["card"])
+        batch_row.pack(fill=tk.X)
+        tk.Checkbutton(batch_row, text="📦 分批次输出（超长视频自动按集数分组）", variable=self.batch_output_var,
+                       font=("微软雅黑", 10), bg=C["card"], fg=C["text"],
+                       command=self._toggle_batch).pack(side=tk.LEFT)
+        tk.Label(batch_row, text="  每批集数:", font=("微软雅黑", 10),
+                 bg=C["card"], fg=C["text"]).pack(side=tk.LEFT, padx=(10, 2))
+        self.batch_entry = tk.Entry(batch_row, textvariable=self.batch_episodes_var,
+                                    width=5, font=("微软雅黑", 10))
+        self.batch_entry.pack(side=tk.LEFT)
+        tk.Label(batch_row, text="集", font=("微软雅黑", 10),
+                 bg=C["card"], fg=C["text"]).pack(side=tk.LEFT, padx=(2, 0))
+        tk.Label(batch_card, text="💡 超过10小时自动按集数分批，每批输出独立文件，如：xxx_01-12.mp4, xxx_13-24.mp4",
+                 font=("微软雅黑", 9), bg=C["card"], fg=C["text3"]).pack(anchor="w", pady=(2, 0))
+
+    def _toggle_segment(self):
+        """切换分段选项状态"""
+        state = "normal" if self.segment_var.get() else "disabled"
+        self.seg_entry.config(state=state)
+
+    def _toggle_batch(self):
+        """切换分批次选项状态"""
+        state = "normal" if self.batch_output_var.get() else "disabled"
+        self.batch_entry.config(state=state)
+
+    def _pip_load_template(self):
+        p = filedialog.askopenfilename(filetypes=[("图片", "*.png *.jpg *.jpeg *.bmp")])
+        if p:
+            self.pip_template = p
+            self.pip_template_label.config(text=os.path.basename(p), fg=C["text"])
+            self._save_config()
+
+    def _pip_select_region(self, name):
+        if not self.pip_template:
+            messagebox.showwarning("提示", "请先选择模板图片"); return
+        try:
+            import cv2
+            from PIL import Image, ExifTags
+            # 用PIL读取并纠正EXIF旋转
+            pil_img = Image.open(self.pip_template)
+            try:
+                exif = pil_img._getexif()
+                if exif:
+                    for tag, val in exif.items():
+                        if ExifTags.TAGS.get(tag) == 'Orientation':
+                            if val == 3: pil_img = pil_img.rotate(180, expand=True)
+                            elif val == 6: pil_img = pil_img.rotate(270, expand=True)
+                            elif val == 8: pil_img = pil_img.rotate(90, expand=True)
+                            break
+            except: pass
+            img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+            if img is None:
+                messagebox.showerror("错误", "无法读取模板图片"); return
+            screen_w = self.root.winfo_screenwidth()
+            screen_h = self.root.winfo_screenheight()
+            h, w = img.shape[:2]
+            scale = min((screen_w - 40) / w, (screen_h - 80) / h, 1.0)
+            disp = cv2.resize(img, (int(w * scale), int(h * scale)))
+
+            messagebox.showinfo("框选步骤",
+                f"框选【{name}】区域：\n"
+                "1. 用鼠标在图片上拖拽画出矩形框\n"
+                "2. 按 Enter 确认\n"
+                "3. 按 ESC 取消")
+
+            roi = cv2.selectROI(f"框选{name} → 拖拽画框 → Enter确认", disp, showCrosshair=True)
+            cv2.destroyAllWindows()
+            if roi[2] > 0 and roi[3] > 0:
+                self.pip_regions[name] = (int(roi[0]/scale), int(roi[1]/scale),
+                                          int(roi[2]/scale), int(roi[3]/scale))
+                txts = [f"{k}: {v}" for k, v in self.pip_regions.items()]
+                self.pip_region_label.config(text="✅ " + " | ".join(txts))
+                self._save_config()
+            else:
+                messagebox.showwarning("提示", f"未选择{name}区域")
+        except ImportError:
+            messagebox.showerror("错误", "需要安装opencv: pip install opencv-python")
+
+    def _pip_add(self, name):
+        files = filedialog.askopenfilenames(filetypes=[("视频", "*.mp4 *.mkv *.avi *.flv *.ts")])
+        for f in files:
+            self.pip_lists[name]["files"].append(f)
+            self.pip_lists[name]["listbox"].insert(tk.END, os.path.basename(f))
+        if files: self._save_config()
+
+    def _pip_clear(self, name):
+        self.pip_lists[name]["listbox"].delete(0, tk.END)
+        self.pip_lists[name]["files"].clear()
+        if name == "center":
+            self.center_folder_groups.clear()
+        self.pip_folder_name = None
+        self._save_config()
+
+    def _pip_import_folder(self, name):
+        """导入文件夹：加载文件夹内所有视频，自动合并，以文件夹名命名输出"""
+        d = filedialog.askdirectory()
+        if not d:
+            return
+        exts = ('.mp4', '.mkv', '.avi', '.flv', '.ts')
+        videos = sorted([f for f in os.listdir(d) if f.lower().endswith(exts)])
+        if not videos:
+            messagebox.showwarning("提示", "文件夹内没有视频文件")
+            return
+        # 清空已有列表
+        self.pip_lists[name]["listbox"].delete(0, tk.END)
+        self.pip_lists[name]["files"].clear()
+        # 添加视频
+        full_videos = []
+        for v in videos:
+            full = os.path.join(d, v)
+            self.pip_lists[name]["files"].append(full)
+            self.pip_lists[name]["listbox"].insert(tk.END, v)
+            full_videos.append(full)
+        # 记录文件夹名
+        folder_name = os.path.basename(d)
+        self.pip_folder_name = folder_name
+        # 自动设置为文件夹组模式，处理时自动合并
+        if name == "center":
+            self.center_folder_groups.append({"name": folder_name, "videos": full_videos})
+            self._log(f"📂 导入文件夹: {d} ({len(videos)}个视频) → 自动合并模式")
+        else:
+            self._log(f"📂 导入文件夹: {d} ({len(videos)}个视频)")
+        self._save_config()
+
+    def _pip_batch_folder_merge(self, name):
+        """批量导入文件夹：只收集文件夹，不合并，点开始处理时再逐文件夹合并"""
+        if name != "center":
+            return
+        exts = ('.mp4', '.mkv', '.avi', '.flv', '.ts')
+
+        while True:
+            d = filedialog.askdirectory(title=f"选择文件夹（已选{len(self.center_folder_groups)}个，取消结束）")
+            if not d:
+                break
+            folder_videos = sorted([os.path.join(d, f) for f in os.listdir(d) if f.lower().endswith(exts)])
+            if not folder_videos:
+                messagebox.showwarning("提示", f"文件夹内没有视频文件:\n{d}")
+                continue
+            folder_name = os.path.basename(d)
+            self.center_folder_groups.append({"name": folder_name, "videos": folder_videos})
+            self.pip_lists[name]["listbox"].insert(tk.END, f"📁 {folder_name} ({len(folder_videos)}个视频)")
+            self._log(f"📁 添加文件夹: {folder_name} ({len(folder_videos)}个视频)")
+
+        if self.center_folder_groups:
+            self._log(f"📁 共添加{len(self.center_folder_groups)}个文件夹，处理时自动逐个合并")
+            self._save_config()
+
+    # ═══════════════════════════════════════
+    #  页面3: 横转竖
+    # ═══════════════════════════════════════
+    def _build_rotate_page(self):
+        # 不重置数据，保留已加载的配置
+
+        card = tk.Frame(self.content, bg=C["card"], padx=16, pady=12)
+        card.pack(fill=tk.X, pady=(0, 6))
+
+        tk.Label(card, text="🔄 横屏转竖屏（旋转90°）", font=("微软雅黑", 11, "bold"),
+                 bg=C["card"], fg=C["text"]).pack(anchor="w")
+        tk.Label(card, text="1920×1080 → 1080×1920，视频顺时针旋转90°",
+                 font=("微软雅黑", 9), bg=C["card"], fg=C["text2"]).pack(anchor="w", pady=(2, 8))
+
+        # 方向选择
+        rr = tk.Frame(card, bg=C["card"])
+        rr.pack(fill=tk.X)
+        tk.Label(rr, text="旋转方向:", font=("微软雅黑", 10), bg=C["card"], fg=C["text"]).pack(side=tk.LEFT)
+        self.rotate_dir = tk.StringVar(value="cw")
+        tk.Radiobutton(rr, text="顺时针90°", variable=self.rotate_dir, value="cw",
+                       font=("微软雅黑", 10), bg=C["card"]).pack(side=tk.LEFT, padx=10)
+        tk.Radiobutton(rr, text="逆时针90°", variable=self.rotate_dir, value="ccw",
+                       font=("微软雅黑", 10), bg=C["card"]).pack(side=tk.LEFT, padx=10)
+
+        # 视频列表
+        vf = tk.Frame(self.content, bg=C["card"], padx=16, pady=12)
+        vf.pack(fill=tk.BOTH, expand=True)
+        tk.Label(vf, text="🎬 视频文件", font=("微软雅黑", 11, "bold"),
+                 bg=C["card"], fg=C["text"]).pack(anchor="w")
+
+        vrow = tk.Frame(vf, bg=C["card"])
+        vrow.pack(fill=tk.BOTH, expand=True, pady=4)
+        self.rotate_listbox = tk.Listbox(vrow, height=6, font=("微软雅黑", 9))
+        self.rotate_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        sb = tk.Scrollbar(vrow, command=self.rotate_listbox.yview)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        self.rotate_listbox.config(yscrollcommand=sb.set)
+
+        bb = tk.Frame(vf, bg=C["card"])
+        bb.pack(fill=tk.X, pady=4)
+        for txt, cmd in [("添加视频", self._rotate_add), ("导入文件夹", self._rotate_import),
+                         ("📂 批量文件夹合并", self._rotate_batch_folder_merge),
+                         ("移除选中", self._rotate_remove), ("清空", self._rotate_clear)]:
+            tk.Button(bb, text=txt, font=("微软雅黑", 9), bg="#E5E7EB", fg=C["text"],
+                      relief="flat", padx=10, pady=4, cursor="hand2", command=cmd).pack(side=tk.LEFT, padx=(0, 6))
+
+    def _rotate_add(self):
+        files = filedialog.askopenfilenames(filetypes=[("视频", "*.mp4 *.mkv *.avi *.flv *.ts")])
+        for f in files:
+            self.rotate_videos.append(f)
+            self.rotate_listbox.insert(tk.END, os.path.basename(f))
+
+    def _rotate_import(self):
+        """导入文件夹：加载文件夹内所有视频，自动合并，以文件夹名命名输出"""
+        d = filedialog.askdirectory()
+        if not d:
+            return
+        exts = ('.mp4', '.mkv', '.avi', '.flv', '.ts')
+        videos = sorted([f for f in os.listdir(d) if f.lower().endswith(exts)])
+        if not videos:
+            messagebox.showwarning("提示", "文件夹内没有视频文件")
+            return
+        # 清空已有列表
+        self.rotate_listbox.delete(0, tk.END)
+        self.rotate_videos.clear()
+        # 添加视频
+        full_videos = []
+        for v in videos:
+            full = os.path.join(d, v)
+            self.rotate_videos.append(full)
+            self.rotate_listbox.insert(tk.END, v)
+            full_videos.append(full)
+        # 记录文件夹名
+        folder_name = os.path.basename(d)
+        # 自动设置为文件夹组模式，处理时自动合并
+        self.rotate_folder_groups.append({"name": folder_name, "videos": full_videos})
+        self._log(f"📂 导入文件夹: {d} ({len(videos)}个视频) → 自动合并模式")
+        self._save_config()
+    def _rotate_batch_folder_merge(self):
+        """批量导入文件夹：只收集文件夹，不合并，点开始处理时再逐文件夹合并"""
+        exts = ('.mp4', '.mkv', '.avi', '.flv', '.ts')
+        while True:
+            d = filedialog.askdirectory(title=f"选择文件夹（已选{len(self.rotate_folder_groups)}个，取消结束）")
+            if not d:
+                break
+            folder_videos = sorted([os.path.join(d, f) for f in os.listdir(d) if f.lower().endswith(exts)])
+            if not folder_videos:
+                messagebox.showwarning("提示", f"文件夹内没有视频文件:\n{d}")
+                continue
+            folder_name = os.path.basename(d)
+            self.rotate_folder_groups.append({"name": folder_name, "videos": folder_videos})
+            self.rotate_listbox.insert(tk.END, f"📁 {folder_name} ({len(folder_videos)}个视频)")
+            self._log(f"📁 添加文件夹: {folder_name} ({len(folder_videos)}个视频)")
+        if self.rotate_folder_groups:
+            self._log(f"📁 共添加{len(self.rotate_folder_groups)}个文件夹，处理时自动逐个合并")
+            self._save_config()
+
+    def _rotate_remove(self):
+        for i in reversed(self.rotate_listbox.curselection()):
+            self.rotate_listbox.delete(i)
+            self.rotate_videos.pop(i)
+
+    def _rotate_clear(self):
+        self.rotate_listbox.delete(0, tk.END)
+        self.rotate_videos.clear()
+        self.rotate_folder_groups.clear()
+
+    # ═══════════════════════════════════════
+    #  处理控制
+    # ═══════════════════════════════════════
+    def _start(self):
+        if self._processing: return
+        mode = self.mode_var.get()
+
+        if mode == "套框":
+            if not self.frame_template:
+                messagebox.showwarning("提示", "请选择模板图片"); return
+            if not self.frame_roi:
+                messagebox.showwarning("提示", "请框选视频区域"); return
+            has_files = len(self.frame_videos) > 0
+            has_groups = len(self.frame_folder_groups) > 0
+            if not has_files and not has_groups:
+                messagebox.showwarning("提示", "请添加视频文件或文件夹"); return
+            if self.frame_folder_groups:
+                total_vids = sum(len(g["videos"]) for g in self.frame_folder_groups)
+                info = f"模板: {os.path.basename(self.frame_template)}\n区域: {self.frame_roi}\n文件夹: {len(self.frame_folder_groups)}个 ({total_vids}个视频)"
+            else:
+                info = f"模板: {os.path.basename(self.frame_template)}\n区域: {self.frame_roi}\n视频: {len(self.frame_videos)}个"
+        elif mode == "画中画":
+            if not self.pip_template:
+                messagebox.showwarning("提示", "请选择模板图片"); return
+            if not self.pip_regions:
+                messagebox.showwarning("提示", "请至少框选一个区域"); return
+            has_files = len(self.pip_lists["center"]["files"]) > 0
+            has_groups = len(self.center_folder_groups) > 0
+            if not has_files and not has_groups:
+                messagebox.showwarning("提示", "请添加正片视频或文件夹"); return
+            if self.center_folder_groups:
+                total_vids = sum(len(g["videos"]) for g in self.center_folder_groups)
+                info = f"模板: {os.path.basename(self.pip_template)}\n区域: {len(self.pip_regions)}个\n文件夹: {len(self.center_folder_groups)}个 ({total_vids}个视频)"
+            else:
+                info = f"模板: {os.path.basename(self.pip_template)}\n区域: {len(self.pip_regions)}个\n正片: {len(self.pip_lists['center']['files'])}个"
+        elif mode == "横转竖":
+            has_files = len(self.rotate_videos) > 0
+            has_groups = len(self.rotate_folder_groups) > 0
+            if not has_files and not has_groups:
+                messagebox.showwarning("提示", "请添加视频文件或文件夹"); return
+            if self.rotate_folder_groups:
+                total_vids = sum(len(g["videos"]) for g in self.rotate_folder_groups)
+                info = f"文件夹: {len(self.rotate_folder_groups)}个 ({total_vids}个视频)\n方向: {'顺时针' if self.rotate_dir.get()=='cw' else '逆时针'}90°"
+            else:
+                info = f"视频: {len(self.rotate_videos)}个\n方向: {'顺时针' if self.rotate_dir.get()=='cw' else '逆时针'}90°"
+        else:
+            return
+
+        merge_info = f"\n合并: 每{self.merge_count.get()}个合并" if self.merge_var.get() else ""
+        codec_info = f"编码: {self.codec_var.get()} {self.bitrate_var.get()}kbps"
+
+        if not messagebox.askyesno("确认处理",
+            f"模式: {mode}\n{info}\n{codec_info}{merge_info}\n\n输出: {self.out_dir.get()}\n\n开始处理？"):
+            return
+
+        self._processing = True
+        self._cancel = False
+        self.btn_start.config(state="disabled")
+        self.btn_stop.config(state="normal")
+        self.progress["value"] = 0
+        self.lbl_eta.config(text="🔄 启动中...")
+        self._log(f"🚀 准备处理 [{mode}]...")
+        threading.Thread(target=self._process_worker, daemon=True).start()
+
+    def _stop(self):
+        self._cancel = True
+        self._log("⏹ 正在停止...")
+        
+        # 终止当前 FFmpeg 进程
+        if self._current_proc:
+            try:
+                import signal
+                # 尝试优雅地终止（发送 Ctrl+C）
+                self._current_proc.send_signal(signal.CTRL_C_EVENT)
+                self._log("⏹ 已发送停止信号")
+            except:
+                try:
+                    # 强制终止
+                    self._current_proc.kill()
+                    self._log("⏹ 已强制终止ffmpeg进程")
+                except:
+                    pass
+        
+        # 更新按钮状态
+        self.btn_stop.config(state="disabled")
+        self.btn_start.config(state="normal")
+        
+        self._log("⏹ 已停止")
+
+    def _process_worker(self):
+        mode = self.mode_var.get()
+        out = self.out_dir.get()
+        os.makedirs(out, exist_ok=True)
+        t0 = time.time()
+
+        self._log(f"🚀 开始处理 [{mode}]")
+
+        try:
+            if mode == "套框":
+                if self._cancel:
+                    self._log("⏹ 已取消")
+                    return
+                self._process_frame_mode(out)
+            elif mode == "画中画":
+                if self._cancel:
+                    self._log("⏹ 已取消")
+                    return
+                self._process_pip_mode(out)
+            elif mode == "横转竖":
+                self._process_rotate_mode(out)
+        except Exception as e:
+            import traceback
+            self._log(f"❌ 错误: {e}")
+            self._log(traceback.format_exc()[-300:])
+
+        elapsed = time.time() - t0
+        self._processing = False
+        try:
+            self.root.after(0, lambda: (
+                self.btn_start.config(state="normal"),
+                self.btn_stop.config(state="disabled"),
+                self.progress.config(value=100),
+                self.lbl_eta.config(text=f"✅ 共 {elapsed:.1f}s"),
+                self._set_status(f"✅ 完成 · 耗时 {elapsed:.1f}秒")
+            ))
+        except Exception:
+            pass  # GUI已关闭等异常静默处理
+
+    # ═══ 套框处理 ═══
+    def _process_frame_mode(self, out):
+        has_groups = len(self.frame_folder_groups) > 0
+        frame_videos = self.frame_videos
+
+        # 如果有文件夹组，逐个合并后分别处理
+        if has_groups:
+            total_groups = len(self.frame_folder_groups)
+            for gi, group in enumerate(self.frame_folder_groups):
+                if self._cancel: break
+                gname = group["name"]
+                gvids = group["videos"]
+                self._log(f"📁 [{gi+1}/{total_groups}] 处理文件夹: {gname} ({len(gvids)}个视频)")
+                self._set_status(f"📁 合并 {gname}...")
+                # 合并文件夹内视频（全部合并为1个）
+                if len(gvids) == 1:
+                    merged = gvids[0]
+                else:
+                    # 临时设置merge_count为文件夹内视频数，确保全部合并为1个
+                    old_count = self.merge_count.get()
+                    self.merge_count.set(len(gvids))
+                    merged_list = self._merge_videos(gvids, out)
+                    self.merge_count.set(old_count)
+                    merged = merged_list[0] if len(merged_list) == 1 else (self._merge_videos(merged_list, out)[0] if merged_list else gvids[0])
+                self._log(f"  🔗 合并完成: {os.path.basename(merged)}")
+                self._set_status(f"🖼 处理 {gname}...")
+                # 用合并后的文件作为套框处理
+                self._process_frame_single(merged, out, f"{gname}_套框.mp4")
+            return
+
+        # 无文件夹组，按原有逻辑处理
+        videos = frame_videos
+        if self.merge_var.get():
+            if self.merge_mode.get() == "folder":
+                d = filedialog.askdirectory(title="选择要合并的文件夹")
+                if not d:
+                    self._set_status("已取消")
+                    return
+                exts = ('.mp4', '.mkv', '.avi', '.flv', '.ts')
+                folder_videos = sorted([os.path.join(d, f) for f in os.listdir(d) if f.lower().endswith(exts)])
+                if not folder_videos:
+                    messagebox.showwarning("提示", "文件夹内没有视频文件")
+                    return
+                self.frame_folder_name = os.path.basename(d)
+                self._log(f"📂 文件夹合并: {d} ({len(folder_videos)}个视频 → 合并为1个)")
+                self._set_status("🔗 合并视频中...")
+                videos = self._merge_videos(folder_videos, out)
+            elif len(videos) > 1:
+                # 按数量合并 - 自动用文件夹名称
+                if not self.frame_folder_name and videos:
+                    # 从第一个视频路径获取文件夹名称
+                    video_dir = os.path.dirname(videos[0])
+                    self.frame_folder_name = os.path.basename(video_dir)
+                self._log("🔗 正在合并视频...")
+                self._set_status("🔗 合并视频中...")
+                videos = self._merge_videos(videos, out)
+
+        total = len(videos)
+        for i, vpath in enumerate(videos):
+            if self._cancel: break
+            self._process_frame_single(vpath, out)
+
+    
+    def _ensure_nvenc_compatible(self, vpath, out_dir):
+        """确保视频格式兼容NVENC编码器"""
+        # 获取视频信息
+        info = self._get_video_info(vpath)
+        pix_fmt = info.get('pix_fmt', 'unknown')
+        
+        # 如果已经是yuv420p，直接返回
+        if pix_fmt == 'yuv420p':
+            return vpath
+        
+        # 需要转换格式
+        self._log(f"🔄 转换格式: {pix_fmt} → yuv420p (NVENC兼容)")
+        base = os.path.splitext(os.path.basename(vpath))[0]
+        out_path = os.path.join(out_dir, f"{base}_converted.mp4")
+        
+        cmd = ['ffmpeg', '-y', '-i', vpath,
+               '-pix_fmt', 'yuv420p',
+               '-c:v', 'libx264', '-crf', '18', '-preset', 'fast',
+               '-c:a', 'copy',
+               '-movflags', '+faststart',
+               out_path]
+        
+        r = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=7200)
+        if r.returncode == 0:
+            self._log(f"✅ 格式转换完成")
+            return out_path
+        else:
+            self._log(f"⚠️ 格式转换失败，使用原始文件")
+            return vpath
+    
+    def _process_frame_single(self, vpath, out, out_name=None):
+        """处理单个视频的套框"""
+        self._log(f"🖼 处理: {os.path.basename(vpath)}")
+        self._set_status(f"🖼 处理中...")
+
+        info = self._get_video_info(vpath)
+        x, y, w, h = self.frame_roi
+        # 确保分辨率为偶数（H265编码要求）
+        w = w // 2 * 2
+        h = h // 2 * 2
+        codec = self.codec_var.get()
+        bitrate = self.bitrate_var.get()
+        
+        # 检查源视频格式，如果NVENC不支持则先转换
+        if 'nvenc' in codec:
+            vpath = self._ensure_nvenc_compatible(vpath, out)
+
+        if out_name:
+            name = out_name
+        elif self.frame_folder_name:
+            name = f"{self.frame_folder_name}_套框.mp4"
+        else:
+            name = os.path.splitext(os.path.basename(vpath))[0] + "_套框.mp4"
+        outpath = os.path.join(out, name)
+
+        ext = os.path.splitext(self.frame_template)[1].lower()
+        is_video_template = ext in ('.mp4', '.mkv', '.avi', '.flv', '.ts')
+
+        if is_video_template:
+            t_info = self._get_video_info(self.frame_template)
+            # 模板和正片都使用CUDA解码
+            cmd = ['ffmpeg', '-y', '-hwaccel', 'cuda', '-hwaccel_output_format', 'cuda',
+                   '-stream_loop', '-1', '-i', self.frame_template,
+                   '-hwaccel', 'cuda', '-hwaccel_output_format', 'cuda', '-i', vpath]
+            dur = info.get("duration", t_info.get("duration", 9999))
+            # 使用hwdownload将CUDA帧转回CPU做滤镜
+            vf = (f"[1:v]hwdownload,format=nv12,scale={w}:{h}:force_original_aspect_ratio=decrease,"
+                  f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2[vid];"
+                  f"[0:v]hwdownload,format=nv12[bg];"
+                  f"[bg][vid]overlay={x}:{y}")
+            cmd.extend(['-filter_complex', vf, '-map', '0:v', '-map', '1:a?',
+                        '-t', str(dur)])
+        else:
+            # 模板是图片，只有正片使用CUDA解码
+            cmd = ['ffmpeg', '-y', '-i', self.frame_template,
+                   '-hwaccel', 'cuda', '-hwaccel_output_format', 'cuda', '-i', vpath]
+            # 使用hwdownload将CUDA帧转回CPU做滤镜
+            vf = (f"[1:v]hwdownload,format=nv12,scale={w}:{h}:force_original_aspect_ratio=decrease,"
+                  f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2[vid];"
+                  f"[0:v][vid]overlay={x}:{y}")
+            cmd.extend(['-filter_complex', vf, '-map', '0:v', '-map', '1:a?',
+                        '-t', str(info.get("duration", 9999))])
+
+        cmd.extend(self._encode_args(codec, bitrate))
+        cmd.extend(['-movflags', '+faststart'])
+        cmd.append(outpath)
+
+        dur = info.get("duration", 9999)
+        r = self._run_ffmpeg_progress(cmd, dur, timeout=14400, outpath=outpath, bitrate_kbps=int(bitrate))
+        if r != 0 and 'nvenc' in codec:
+            # NVENC失败，自动降级到libx264
+            self._log(f"⚠️ NVENC失败，自动切换到libx264...")
+            self._nvenc_fallback(cmd, outpath, dur)
+            return
+        if r == 0:
+            self._log(f"  ✅ 完成: {name}")
+            self._append_intro_outro(outpath)
+        else:
+            self._log(f"  ❌ 失败 (code={r})")
+
+    def _nvenc_fallback(self, orig_cmd, outpath, dur):
+        """NVENC失败时自动降级到libx265（软件H265）"""
+        # 重建命令：把NVENC参数替换为libx265参数
+        cmd = ['ffmpeg', '-y']
+        
+        # 收集输入和filter部分（保留原样），去掉NVENC编码参数
+        parts = []
+        skip_next = False
+        for part in orig_cmd[1:]:
+            if skip_next:
+                skip_next = False
+                continue
+            # 去掉NVENC特有参数
+            if part in ('-c:v', '-preset', '-rc', '-b:v', '-maxrate', '-bufsize', '-pix_fmt'):
+                skip_next = True
+                continue
+            parts.append(part)
+        
+        # parts最后一个是输出路径
+        out_file = parts[-1]
+        main_parts = parts[:-1]
+        
+        cmd.extend(main_parts)
+        # 加入libx265编码参数（软件H265，质量更好）
+        cmd.extend(['-pix_fmt', 'yuv420p',
+                    '-c:v', 'libx265', '-preset', 'medium',
+                    '-crf', '20',
+                    '-x265-params', 'log-level=error',
+                    '-tag:v', 'hvc1',
+                    '-c:a', 'flac', '-ar', '96000'])
+        cmd.append(out_file)
+        
+        self._log(f"🔄 使用libx265（软件H265）重新编码...")
+        r = self._run_ffmpeg_progress(cmd, dur, timeout=14400, outpath=outpath, bitrate_kbps=3000)
+        if r == 0:
+            self._log(f"  ✅ 完成（libx265降级）")
+            self._append_intro_outro(outpath)
+        else:
+            self._log(f"  ❌ 降级也失败 (code={r})")
+
+    # ═══ 画中画处理（一步到位） ═══
+    def _process_pip_mode(self, out):
+        center_files = self.pip_lists["center"]["files"]
+        has_groups = len(self.center_folder_groups) > 0
+
+        if not center_files and not has_groups:
+            self._log("❌ 没有正片视频"); return
+
+        # 如果有文件夹组，逐个合并后分别处理
+        if has_groups:
+            total_groups = len(self.center_folder_groups)
+            
+            # 检查是否启用分批次输出
+            if self.batch_output_var.get():
+                batch_size = self.batch_episodes_var.get()
+                
+                # 计算总时长，判断是否需要分批
+                total_duration = 0
+                for group in self.center_folder_groups:
+                    for v in group["videos"]:
+                        total_duration += self._get_video_info(v).get("duration", 0)
+                
+                if total_duration > 36000:  # 超过10小时
+                    self._log(f"📦 总时长 {total_duration/3600:.1f}小时，超过10小时，按每{batch_size}集分批输出")
+                    self._process_pip_batched(out, batch_size)
+                    return
+            
+            # 正常逐个处理
+            for gi, group in enumerate(self.center_folder_groups):
+                if self._cancel: break
+                gname = group["name"]
+                gvids = group["videos"]
+                self._log(f"📁 [{gi+1}/{total_groups}] 处理文件夹: {gname} ({len(gvids)}个视频)")
+                self._set_status(f"📁 合并 {gname}...")
+
+                # 合并文件夹内视频（全部合并为1个）
+                if len(gvids) == 1:
+                    merged = gvids[0]
+                else:
+                    # 临时设置merge_count为文件夹内视频数，确保全部合并为1个
+                    old_count = self.merge_count.get()
+                    self.merge_count.set(len(gvids))
+                    merged = self._merge_videos(gvids, out)
+                    self.merge_count.set(old_count)
+                    if len(merged) == 1:
+                        merged = merged[0]
+                    else:
+                        merged = self._merge_videos(merged, out)
+                        merged = merged[0] if merged else gvids[0]
+
+                self._log(f"  🔗 合并完成: {os.path.basename(merged)}")
+                self._set_status(f"📺 处理 {gname}...")
+                # 用合并后的文件作为正片处理
+                self._process_pip_single(merged, out, f"{gname}_画中画.mp4")
+            return
+
+        # 无文件夹组，按原有逻辑处理
+        if not center_files:
+            self._log("❌ 没有正片视频"); return
+
+        do_merge = self.merge_var.get()
+        if do_merge and self.merge_mode.get() == "folder":
+            d = filedialog.askdirectory(title="选择要合并的文件夹")
+            if not d:
+                self._set_status("已取消"); return
+            exts = ('.mp4', '.mkv', '.avi', '.flv', '.ts')
+            folder_videos = sorted([os.path.join(d, f) for f in os.listdir(d) if f.lower().endswith(exts)])
+            if not folder_videos:
+                messagebox.showwarning("提示", "文件夹内没有视频文件"); return
+            self.pip_folder_name = os.path.basename(d)
+            center_files = folder_videos
+            self.pip_lists["center"]["files"] = center_files
+            self._log(f"📂 文件夹合并: {d} ({len(folder_videos)}个视频)")
+            do_merge = True
+
+        if do_merge and len(center_files) > 1:
+            total_duration = sum(self._get_video_info(f).get("duration", 0) for f in center_files)
+            self._log(f"🔗 合并模式: {len(center_files)}个正片, 总时长{total_duration:.0f}秒")
+        else:
+            total_duration = self._get_video_info(center_files[0]).get("duration", 9999)
+
+        # 确定输出文件名
+        if self.pip_folder_name:
+            out_name = f"{self.pip_folder_name}_画中画.mp4"
+        elif do_merge:
+            ts = time.strftime("%m%d_%H%M%S")
+            out_name = f"合并_画中画_{ts}.mp4"
+        else:
+            out_name = os.path.splitext(os.path.basename(center_files[0]))[0] + "_画中画.mp4"
+
+        self._process_pip_single(center_files if do_merge else center_files[0], out, out_name, do_merge=do_merge, total_duration=total_duration)
+
+    def _process_pip_batched(self, out, batch_size):
+        """分批次处理画中画视频（当总时长超过10小时时，按集数分批输出）"""
+        total_groups = len(self.center_folder_groups)
+        
+        # 按批次大小分组
+        batches = []
+        for i in range(0, total_groups, batch_size):
+            batch = self.center_folder_groups[i:i+batch_size]
+            batches.append(batch)
+        
+        self._log(f"📦 共 {total_groups} 集，分 {len(batches)} 批处理，每批 {batch_size} 集")
+        
+        # 获取动漫名称（从第一个文件夹名提取）
+        first_group_name = self.center_folder_groups[0]["name"]
+        # 移除可能的后缀如 _01, _第01集 等
+        anime_name = first_group_name.split("_")[0] if "_" in first_group_name else first_group_name
+        
+        for batch_idx, batch in enumerate(batches):
+            if self._cancel:
+                self._log("⛔ 用户取消")
+                break
+            
+            # 计算批次的起止集数
+            start_ep = batch_idx * batch_size + 1
+            end_ep = min(start_ep + batch_size - 1, total_groups)
+            
+            self._log(f"\n{'='*50}")
+            self._log(f"📦 批次 {batch_idx+1}/{len(batches)}: 第{start_ep:02d}-{end_ep:02d}集 ({len(batch)}个视频)")
+            self._log(f"{'='*50}")
+            
+            # 合并这一批的所有视频
+            batch_videos = []
+            for group in batch:
+                batch_videos.extend(group["videos"])
+            
+            self._set_status(f"📦 合并批次 {batch_idx+1}...")
+            
+            if len(batch_videos) == 1:
+                merged = batch_videos[0]
+            else:
+                # 临时设置merge_count为批次内视频数
+                old_count = self.merge_count.get()
+                self.merge_count.set(len(batch_videos))
+                merged_list = self._merge_videos(batch_videos, out)
+                self.merge_count.set(old_count)
+                
+                if len(merged_list) == 1:
+                    merged = merged_list[0]
+                else:
+                    # 需要二次合并
+                    merged_list = self._merge_videos(merged_list, out)
+                    merged = merged_list[0] if merged_list else batch_videos[0]
+            
+            self._log(f"  🔗 批次合并完成: {os.path.basename(merged)}")
+            
+            # 输出文件名：动漫名_01-12_画中画.mp4
+            out_name = f"{anime_name}_{start_ep:02d}-{end_ep:02d}_画中画.mp4"
+            
+            self._set_status(f"📺 处理批次 {batch_idx+1}...")
+            self._process_pip_single(merged, out, out_name)
+        
+        if not self._cancel:
+            self._log(f"\n✅ 分批次处理完成！共 {len(batches)} 个文件")
+
+    def _process_pip_segmented(self, center_files, out, out_name, do_merge, total_duration, segment_sec):
+        """分段处理画中画视频，然后合并"""
+        import tempfile
+        
+        base_name = os.path.splitext(out_name)[0]
+        segment_files = []
+        
+        # 计算每个分段的时间范围
+        segments = []
+        current_start = 0
+        remaining = total_duration
+        
+        while remaining > 0:
+            seg_dur = min(segment_sec, remaining)
+            segments.append((current_start, seg_dur))
+            current_start += seg_dur
+            remaining -= seg_dur
+        
+        self._log(f"📦 将分成 {len(segments)} 段处理")
+        
+        # 计算每个分段对应的视频文件和时间偏移
+        file_durations = []
+        for f in center_files:
+            dur = self._get_video_info(f).get("duration", 0)
+            file_durations.append((f, dur))
+        
+        for seg_idx, (seg_start, seg_dur) in enumerate(segments):
+            if self._cancel:
+                self._log("⛔ 用户取消")
+                break
+            
+            seg_name = f"{base_name}_part{seg_idx+1:02d}.mp4"
+            self._log(f"\n🔪 处理分段 {seg_idx+1}/{len(segments)}: {seg_start/60:.1f}-{(seg_start+seg_dur)/60:.1f}分钟")
+            
+            # 找出这个分段涉及的视频文件和对应的时间范围
+            seg_files = []
+            time_offset = 0
+            
+            for file_path, file_dur in file_durations:
+                if time_offset + file_dur <= seg_start:
+                    # 这个文件完全在分段开始之前
+                    time_offset += file_dur
+                    continue
+                
+                if time_offset >= seg_start + seg_dur:
+                    # 这个文件完全在分段结束之后
+                    break
+                
+                # 这个文件与分段有重叠
+                seg_files.append(file_path)
+                time_offset += file_dur
+            
+            if not seg_files:
+                self._log(f"⚠️ 分段 {seg_idx+1} 无对应视频文件，跳过")
+                continue
+            
+            # 计算在第一个文件中的起始偏移
+            first_file_start = max(0, seg_start - (time_offset - sum(self._get_video_info(f).get("duration", 0) for f in seg_files)))
+            
+            # 使用ss参数截取分段
+            self._process_pip_single_with_range(
+                seg_files, out, seg_name, do_merge, 
+                seg_dur, first_file_start
+            )
+            segment_files.append(os.path.join(out, seg_name))
+        
+        # 合并所有分段
+        if segment_files and not self._cancel:
+            self._log(f"\n🔗 合并 {len(segment_files)} 个分段...")
+            merged_path = self._merge_segments(segment_files, out, out_name)
+            if merged_path:
+                self._log(f"✅ 分段处理完成: {out_name}")
+            else:
+                self._log(f"⚠️ 自动合并失败，请手动合并分段文件")
+    
+    def _process_pip_single_with_range(self, center_files, out, out_name, do_merge, total_duration, start_offset):
+        """处理单个正片的画中画（带时间范围截取）"""
+        # 检查必要的设置
+        if not self.pip_template:
+            self._log("❌ 未设置模板图片")
+            return
+        
+        if not self.pip_regions:
+            self._log("❌ 未设置区域")
+            return
+        
+        if "center" not in self.pip_regions:
+            self._log("❌ 未设置正片区域")
+            return
+        
+        self._log(f"📊 开始处理画中画: {out_name}")
+        self._log(f"  时长: {total_duration:.1f}秒")
+        if start_offset > 0:
+            self._log(f"  起始偏移: {start_offset:.1f}秒")
+
+        left_files = self.pip_lists["left"]["files"]
+        right_files = self.pip_lists["right"]["files"]
+        codec = self.codec_var.get()
+        bitrate = self.bitrate_var.get()
+        outpath = os.path.join(out, out_name)
+
+        # ── 构建FFmpeg命令 ──
+        cmd = ['ffmpeg', '-y']
+        input_count = 0
+
+        # 如果有起始偏移，添加全局-ss参数
+        if start_offset > 0:
+            cmd.extend(['-ss', str(start_offset)])
+
+        # Input 0: 背景模板图
+        cmd.extend(['-i', self.pip_template])
+        input_count += 1
+
+        # Input 1: 左装饰（循环）
+        left_idx = None
+        if left_files:
+            left_idx = input_count
+            lf = left_files[0]
+            l_dur = self._get_video_info(lf).get("duration", 0)
+            if l_dur > 0 and l_dur < total_duration:
+                cmd.extend(['-stream_loop', '-1', '-t', str(total_duration)])
+            cmd.extend(['-i', lf])
+            input_count += 1
+
+        # Input 2~N: 正片
+        center_start_idx = input_count
+        if do_merge:
+            for cf in center_files:
+                cmd.extend(['-i', cf])
+                input_count += 1
+            center_input_count = len(center_files)
+        else:
+            cmd.extend(['-i', center_files[0]])
+            input_count += 1
+            center_input_count = 1
+
+        # Input N+1: 右装饰（循环）
+        right_idx = None
+        if right_files:
+            right_idx = input_count
+            rf = right_files[0]
+            r_dur = self._get_video_info(rf).get("duration", 0)
+            if r_dur > 0 and r_dur < total_duration:
+                cmd.extend(['-stream_loop', '-1', '-t', str(total_duration)])
+            cmd.extend(['-i', rf])
+            input_count += 1
+
+        # ── 构建滤镜 ──
+        filter_parts = []
+        center_label = "[center_v]"
+
+        if do_merge:
+            concat_v = "".join(f"[{center_start_idx + i}:v]" for i in range(center_input_count))
+            filter_parts.append(f"{concat_v}concat=n={center_input_count}:v=1[center_v]")
+            for i in range(center_input_count):
+                filter_parts.append(f"[{center_start_idx + i}:a]aresample=44100,aformat=channel_layouts=stereo[c{i}_a]")
+            concat_a = "".join(f"[c{i}_a]" for i in range(center_input_count))
+            filter_parts.append(f"{concat_a}concat=n={center_input_count}:v=0:a=1[center_a]")
+        else:
+            center_label = f"[{center_start_idx}:v]"
+
+        # 区域处理
+        region_labels = {}
+
+        if left_files and "left" in self.pip_regions:
+            lw = self.pip_regions['left'][2] // 2 * 2
+            lh = self.pip_regions['left'][3] // 2 * 2
+            left_info = self._get_video_info(lf)
+            left_w = left_info.get("width", 0)
+            left_h = left_info.get("height", 0)
+            
+            if left_h > left_w:
+                filter_parts.append(f"[{left_idx}:v]transpose=1,setsar=1,scale={lw}:{lh}[left_v]")
+            else:
+                filter_parts.append(f"[{left_idx}:v]setsar=1,scale={lw}:{lh}[left_v]")
+            region_labels["left"] = "left_v"
+
+        rx, ry, rw, rh = self.pip_regions.get("center", (0, 0, 1920, 1080))
+        rw = rw // 2 * 2
+        rh = rh // 2 * 2
+        center_info = self._get_video_info(center_files[0])
+        center_w = center_info.get("width", 0)
+        center_h = center_info.get("height", 0)
+        
+        if center_h > center_w:
+            filter_parts.append(f"{center_label}transpose=1,setsar=1,scale={rw}:{rh}[center_v]")
+        else:
+            filter_parts.append(f"{center_label}setsar=1,scale={rw}:{rh}[center_v]")
+        region_labels["center"] = "center_v"
+
+        if right_files and "right" in self.pip_regions:
+            rwi = self.pip_regions['right'][2] // 2 * 2
+            rhi = self.pip_regions['right'][3] // 2 * 2
+            right_info = self._get_video_info(rf)
+            right_w = right_info.get("width", 0)
+            right_h = right_info.get("height", 0)
+            
+            if right_h > right_w:
+                filter_parts.append(f"[{right_idx}:v]transpose=1,setsar=1,scale={rwi}:{rhi}[right_v]")
+            else:
+                filter_parts.append(f"[{right_idx}:v]setsar=1,scale={rwi}:{rhi}[right_v]")
+            region_labels["right"] = "right_v"
+
+        # overlay链
+        ordered = []
+        if "left" in region_labels: ordered.append("left")
+        ordered.append("center")
+        if "right" in region_labels: ordered.append("right")
+
+        prev = "[0:v]"
+        for i, rname in enumerate(ordered):
+            rx, ry, _, _ = self.pip_regions[rname]
+            lbl = region_labels[rname]
+            out_label = f"[ov_{i}]" if i < len(ordered) - 1 else "[out]"
+            filter_parts.append(f"{prev}[{lbl}]overlay={rx}:{ry}{out_label}")
+            prev = out_label
+
+        filter_parts.append("[out]scale=trunc(iw/2)*2:trunc(ih/2)*2[out_final]")
+
+        filter_str = ';'.join(filter_parts).replace(' ', '')
+        cmd.extend(['-filter_complex', filter_str])
+        cmd.extend(['-map', '[out_final]'])
+        if do_merge:
+            cmd.extend(['-map', '[center_a]'])
+        else:
+            cmd.extend(['-map', f'{center_start_idx}:a?'])
+        cmd.extend(['-t', str(total_duration)])
+        cmd.extend(self._encode_args(codec, bitrate))
+        cmd.extend(['-movflags', '+faststart'])
+        cmd.append(outpath)
+
+        self._log(f"📺 开始处理: {out_name}")
+        self._set_status(f"📺 处理中...")
+        
+        cmd_str = ' '.join(cmd)
+        self._log(f"🔧 FFmpeg命令: {cmd_str[:200]}...")
+        
+        try:
+            r = self._run_ffmpeg_progress(cmd, total_duration, timeout=43200, outpath=outpath, bitrate_kbps=int(bitrate))
+            if r != 0 and 'nvenc' in codec:
+                self._log(f"⚠️ NVENC失败，自动切换到libx265...")
+                self._nvenc_fallback(cmd, outpath, total_duration)
+                return
+            if r == 0:
+                self._log(f"✅ 完成: {out_name}")
+            else:
+                self._log(f"❌ 失败 (code={r})")
+        except Exception as e:
+            self._log(f"❌ 异常: {e}")
+
+    def _merge_segments(self, segment_files, out, final_name):
+        """合并分段视频文件"""
+        if len(segment_files) == 0:
+            return None
+        
+        if len(segment_files) == 1:
+            # 只有一个分段，直接重命名
+            src = segment_files[0]
+            dst = os.path.join(out, final_name)
+            if os.path.exists(dst):
+                os.remove(dst)
+            os.rename(src, dst)
+            return dst
+        
+        # 创建concat列表文件
+        list_file = os.path.join(out, "_concat_list.txt")
+        with open(list_file, 'w', encoding='utf-8') as f:
+            for seg in segment_files:
+                # 使用正斜杠，避免FFmpeg路径问题
+                safe_path = seg.replace('\\', '/')
+                f.write(f"file '{safe_path}'\n")
+        
+        # 合并命令
+        outpath = os.path.join(out, final_name)
+        cmd = [
+            'ffmpeg', '-y',
+            '-f', 'concat', '-safe', '0',
+            '-i', list_file,
+            '-c', 'copy',  # 无损合并
+            '-movflags', '+faststart',
+            outpath
+        ]
+        
+        self._log(f"🔗 合并命令: {' '.join(cmd)}")
+        
+        try:
+            r = subprocess.run(cmd, capture_output=True, timeout=300).returncode
+            if r == 0:
+                # 合并成功，删除分段文件和列表文件
+                for seg in segment_files:
+                    if os.path.exists(seg):
+                        os.remove(seg)
+                if os.path.exists(list_file):
+                    os.remove(list_file)
+                return outpath
+            else:
+                self._log(f"⚠️ 合并失败 (code={r})")
+                return None
+        except Exception as e:
+            self._log(f"⚠️ 合并异常: {e}")
+            return None
+
+    def _process_pip_single(self, center_input, out, out_name, do_merge=False, total_duration=None):
+        """处理单个正片的画中画（center_input: 文件路径或文件列表）"""
+        if isinstance(center_input, list):
+            center_files = center_input
+        else:
+            center_files = [center_input]
+
+        if total_duration is None:
+            total_duration = sum(self._get_video_info(f).get("duration", 0) for f in center_files)
+        
+        # ── 分段处理逻辑 ──
+        if self.segment_var.get() and total_duration > 0:
+            segment_sec = self.segment_minutes_var.get() * 60  # 转换为秒
+            if total_duration > segment_sec:
+                self._log(f"🔪 视频时长 {total_duration/60:.1f}分钟，超过阈值，启用分段处理")
+                self._process_pip_segmented(center_files, out, out_name, do_merge, total_duration, segment_sec)
+                return
+        
+        # 检查必要的设置
+        if not self.pip_template:
+            self._log("❌ 未设置模板图片")
+            return
+        
+        if not self.pip_regions:
+            self._log("❌ 未设置区域")
+            return
+        
+        if "center" not in self.pip_regions:
+            self._log("❌ 未设置正片区域")
+            return
+        
+        self._log(f"📊 开始处理画中画: {out_name}")
+        self._log(f"  模板: {os.path.basename(self.pip_template)}")
+        self._log(f"  区域: {list(self.pip_regions.keys())}")
+        self._log(f"  正片: {len(center_files)}个文件")
+        self._log(f"  总时长: {total_duration:.1f}秒")
+
+        left_files = self.pip_lists["left"]["files"]
+        right_files = self.pip_lists["right"]["files"]
+        codec = self.codec_var.get()
+        bitrate = self.bitrate_var.get()
+        outpath = os.path.join(out, out_name)
+
+        # ── 构建FFmpeg命令 ──
+        cmd = ['ffmpeg', '-y']
+        input_count = 0
+
+        # Input 0: 背景模板图
+        cmd.extend(['-i', self.pip_template])
+        input_count += 1
+
+        # Input 1: 左装饰（循环）
+        left_idx = None
+        if left_files:
+            left_idx = input_count
+            lf = left_files[0]
+            l_dur = self._get_video_info(lf).get("duration", 0)
+            if l_dur > 0 and l_dur < total_duration:
+                cmd.extend(['-stream_loop', '-1', '-t', str(total_duration)])
+            cmd.extend(['-i', lf])
+            input_count += 1
+
+        # Input 2~N: 正片
+        center_start_idx = input_count
+        if do_merge:
+            for cf in center_files:
+                cmd.extend(['-i', cf])
+                input_count += 1
+            center_input_count = len(center_files)
+        else:
+            cmd.extend(['-i', center_files[0]])
+            input_count += 1
+            center_input_count = 1
+
+        # Input N+1: 右装饰（循环）
+        right_idx = None
+        if right_files:
+            right_idx = input_count
+            rf = right_files[0]
+            r_dur = self._get_video_info(rf).get("duration", 0)
+            if r_dur > 0 and r_dur < total_duration:
+                cmd.extend(['-stream_loop', '-1', '-t', str(total_duration)])
+            cmd.extend(['-i', rf])
+            input_count += 1
+
+        # ── 构建滤镜 ──
+        filter_parts = []
+        center_label = "[center_v]"
+
+        if do_merge:
+            concat_v = "".join(f"[{center_start_idx + i}:v]" for i in range(center_input_count))
+            filter_parts.append(f"{concat_v}concat=n={center_input_count}:v=1[center_v]")
+            for i in range(center_input_count):
+                filter_parts.append(f"[{center_start_idx + i}:a]aresample=44100,aformat=channel_layouts=stereo[c{i}_a]")
+            concat_a = "".join(f"[c{i}_a]" for i in range(center_input_count))
+            filter_parts.append(f"{concat_a}concat=n={center_input_count}:v=0:a=1[center_a]")
+        else:
+            center_label = f"[{center_start_idx}:v]"
+
+        cvw, cvh = 1920, 1080
+
+        # 区域处理
+        region_labels = {}
+        region_idx = 0
+
+        if left_files and "left" in self.pip_regions:
+            lw = self.pip_regions['left'][2] // 2 * 2
+            lh = self.pip_regions['left'][3] // 2 * 2
+            # 检查视频方向
+            left_info = self._get_video_info(lf)
+            left_w = left_info.get("width", 0)
+            left_h = left_info.get("height", 0)
+            
+            if left_h > left_w:
+                filter_parts.append(f"[{left_idx}:v]transpose=1,setsar=1,scale={lw}:{lh}[left_v]")
+            else:
+                filter_parts.append(f"[{left_idx}:v]setsar=1,scale={lw}:{lh}[left_v]")
+            region_labels["left"] = "left_v"
+
+        rx, ry, rw, rh = self.pip_regions.get("center", (0, 0, 1920, 1080))
+        # 确保分辨率为偶数（H265编码要求）
+        rw = rw // 2 * 2
+        rh = rh // 2 * 2
+        # 检查视频方向，决定是否需要旋转
+        center_info = self._get_video_info(center_files[0])
+        center_w = center_info.get("width", 0)
+        center_h = center_info.get("height", 0)
+        
+        # 如果视频是竖屏（高度>宽度），则旋转；否则不旋转
+        if center_h > center_w:
+            filter_parts.append(f"{center_label}transpose=1,setsar=1,scale={rw}:{rh}[center_v]")
+        else:
+            filter_parts.append(f"{center_label}setsar=1,scale={rw}:{rh}[center_v]")
+        region_labels["center"] = "center_v"
+
+        if right_files and "right" in self.pip_regions:
+            rwi = self.pip_regions['right'][2] // 2 * 2
+            rhi = self.pip_regions['right'][3] // 2 * 2
+            # 检查视频方向
+            right_info = self._get_video_info(rf)
+            right_w = right_info.get("width", 0)
+            right_h = right_info.get("height", 0)
+            
+            if right_h > right_w:
+                filter_parts.append(f"[{right_idx}:v]transpose=1,setsar=1,scale={rwi}:{rhi}[right_v]")
+            else:
+                filter_parts.append(f"[{right_idx}:v]setsar=1,scale={rwi}:{rhi}[right_v]")
+            region_labels["right"] = "right_v"
+
+        # overlay链
+        ordered = []
+        if "left" in region_labels: ordered.append("left")
+        ordered.append("center")
+        if "right" in region_labels: ordered.append("right")
+
+        prev = "[0:v]"
+        for i, rname in enumerate(ordered):
+            rx, ry, _, _ = self.pip_regions[rname]
+            lbl = region_labels[rname]
+            out_label = f"[ov_{i}]" if i < len(ordered) - 1 else "[out]"
+            filter_parts.append(f"{prev}[{lbl}]overlay={rx}:{ry}{out_label}")
+            prev = out_label
+
+        filter_parts.append("[out]scale=trunc(iw/2)*2:trunc(ih/2)*2[out_final]")
+
+        filter_str = ';'.join(filter_parts).replace(' ', '')
+        cmd.extend(['-filter_complex', filter_str])
+        cmd.extend(['-map', '[out_final]'])
+        if do_merge:
+            cmd.extend(['-map', '[center_a]'])
+        else:
+            cmd.extend(['-map', f'{center_start_idx}:a?'])
+        cmd.extend(['-t', str(total_duration)])
+        cmd.extend(self._encode_args(codec, bitrate))
+        cmd.extend(['-movflags', '+faststart'])
+        cmd.append(outpath)
+
+        self._log(f"📺 开始处理: {out_name}")
+        self._set_status(f"📺 处理中...")
+        
+        # 记录命令（用于调试）
+        cmd_str = ' '.join(cmd)
+        self._log(f"🔧 FFmpeg命令: {cmd_str[:200]}...")
+        
+        try:
+            r = self._run_ffmpeg_progress(cmd, total_duration, timeout=43200, outpath=outpath, bitrate_kbps=int(bitrate))
+            if r != 0 and 'nvenc' in codec:
+                # NVENC失败，自动降级到libx265
+                self._log(f"⚠️ NVENC失败，自动切换到libx265...")
+                self._nvenc_fallback(cmd, outpath, total_duration)
+                return
+            if r == 0:
+                self._log(f"✅ 完成: {out_name}")
+                self._append_intro_outro(outpath)
+            else:
+                self._log(f"❌ 失败 (code={r})")
+                self._log(f"💡 可能原因:")
+                self._log(f"  1. 视频格式不支持")
+                self._log(f"  2. 区域设置错误")
+                self._log(f"  3. 模板图片问题")
+                self._log(f"  4. 显存不足")
+        except Exception as e:
+            self._log(f"❌ 异常: {e}")
+            self._log(f"💡 请检查:")
+            self._log(f"  1. FFmpeg 是否正确安装")
+            self._log(f"  2. 视频文件是否损坏")
+            self._log(f"  3. 磁盘空间是否足够")
+
+    # ═══ 横转竖处理 ═══
+    def _process_rotate_mode(self, out):
+        has_groups = len(self.rotate_folder_groups) > 0
+
+        # 如果有文件夹组，逐个合并后分别处理
+        if has_groups:
+            total_groups = len(self.rotate_folder_groups)
+            for gi, group in enumerate(self.rotate_folder_groups):
+                if self._cancel: break
+                gname = group["name"]
+                gvids = group["videos"]
+                self._log(f"📁 [{gi+1}/{total_groups}] 处理文件夹: {gname} ({len(gvids)}个视频)")
+                self._set_status(f"📁 合并 {gname}...")
+                # 合并文件夹内视频（全部合并为1个）
+                if len(gvids) == 1:
+                    merged = gvids[0]
+                else:
+                    old_count = self.merge_count.get()
+                    self.merge_count.set(len(gvids))
+                    merged_list = self._merge_videos(gvids, out)
+                    self.merge_count.set(old_count)
+                    merged = merged_list[0] if len(merged_list) == 1 else (self._merge_videos(merged_list, out)[0] if merged_list else gvids[0])
+                self._log(f"  🔗 合并完成: {os.path.basename(merged)}")
+                self._set_status(f"🔄 处理 {gname}...")
+                self._process_rotate_single(merged, out, f"{gname}_竖屏.mp4")
+            return
+
+        # 无文件夹组，按原有逻辑处理
+        videos = self.rotate_videos
+        if self.merge_var.get() and len(videos) > 1:
+            self._log("🔗 正在合并视频...")
+            self._set_status("🔗 合并视频中...")
+            videos = self._merge_videos(videos, out)
+
+        for vpath in videos:
+            if self._cancel: break
+            self._process_rotate_single(vpath, out)
+
+    def _process_rotate_single(self, vpath, out, out_name=None):
+        """处理单个视频的横转竖"""
+        self._log(f"🔄 处理: {os.path.basename(vpath)}")
+        self._set_status(f"🔄 处理中...")
+
+        info = self._get_video_info(vpath)
+        codec = self.codec_var.get()
+        bitrate = self.bitrate_var.get()
+        direction = self.rotate_dir.get()
+
+        if out_name:
+            name = out_name
+        else:
+            name = os.path.splitext(os.path.basename(vpath))[0] + "_竖屏.mp4"
+        outpath = os.path.join(out, name)
+
+        transpose = "1" if direction == "cw" else "2"
+        # 使用CUDA解码加速，hwdownload转回CPU做transpose
+        cmd = ['ffmpeg', '-y', '-hwaccel', 'cuda', '-hwaccel_output_format', 'cuda', '-i', vpath,
+               '-filter_complex', f'[0:v]hwdownload,format=nv12,transpose={transpose}[out]',
+               '-map', '[out]', '-map', '0:a?']
+        cmd.extend(self._encode_args(codec, bitrate))
+        cmd.extend(['-movflags', '+faststart'])
+        cmd.append(outpath)
+
+        dur = info.get("duration", 9999)
+        r = self._run_ffmpeg_progress(cmd, dur, timeout=14400, outpath=outpath, bitrate_kbps=int(bitrate))
+        if r != 0 and 'nvenc' in codec:
+            self._log(f"⚠️ NVENC失败，自动切换到libx265...")
+            self._nvenc_fallback(cmd, outpath, dur)
+            return
+        if r == 0:
+            self._log(f"  ✅ 完成: {name}")
+            self._append_intro_outro(outpath)
+        else:
+            self._log(f"  ❌ 失败 (code={r})")
+
+    # ═══════════════════════════════════════
+    #  工具方法
+    # ═══════════════════════════════════════
+    def _encode_args(self, codec, bitrate):
+        """构建编码参数"""
+        br = int(bitrate)
+        # 游戏模式用p5（慢但省GPU），正常模式用p1（快）
+        preset = "p5" if self.game_mode.get() else "p1"
+        if "nvenc" in codec:
+            # 使用yuv420p确保最大兼容性（10bit可能导致NVENC -22错误）
+            return ['-pix_fmt', 'yuv420p',
+                    '-c:v', codec, '-preset', preset, '-rc', 'vbr',
+                    '-b:v', f'{br}k', '-maxrate', f'{int(br*1.5)}k',
+                    '-bufsize', f'{int(br*2)}k',
+                    '-c:a', 'flac', '-ar', '96000']
+        elif codec == 'libx265':
+            # 软件H265编码
+            return ['-pix_fmt', 'yuv420p',
+                    '-c:v', 'libx265', '-preset', 'medium',
+                    '-crf', '20',
+                    '-x265-params', 'log-level=error',
+                    '-tag:v', 'hvc1',
+                    '-c:a', 'flac', '-ar', '96000']
+        else:
+            # libx264: 只用CRF或只用码率, 不能同时用!
+            # B站兼容: yuv420p + 适当keyframe
+            if br > 0:
+                return ['-pix_fmt', 'yuv420p',
+                        '-c:v', 'libx264', '-preset', 'medium',
+                        '-b:v', f'{br}k', '-maxrate', f'{int(br*1.5)}k',
+                        '-bufsize', f'{int(br*2)}k',
+                        '-g', '48', '-keyint_min', '48',
+                        '-c:a', 'flac', '-ar', '96000']
+            else:
+                return ['-pix_fmt', 'yuv420p',
+                        '-c:v', 'libx264', '-preset', 'medium',
+                        '-crf', '23',
+                        '-g', '48', '-keyint_min', '48',
+                        '-c:a', 'flac', '-ar', '96000']
+
+    def _log(self, msg):
+        ts = time.strftime("%H:%M:%S")
+        line = f"[{ts}] {msg}\n"
+        # 同时输出到命令行
+        print(line, end="", flush=True)
+        try:
+            self.root.after(0, lambda: (
+                self.log_text.insert(tk.END, line),
+                self.log_text.see(tk.END)
+            ))
+        except:
+            pass
+
+    def _set_status(self, t):
+        try:
+            self.root.after(0, lambda: self.lbl_status.config(text=t))
+        except:
+            pass
+
+    def _update_progress(self, pct, eta_text=""):
+        """更新进度条和ETA标签"""
+        try:
+            self.root.after(0, lambda: (
+                self.progress.config(value=min(pct, 100)),
+                self.lbl_eta.config(text=eta_text)
+            ))
+        except:
+            pass
+
+    def _format_eta(self, seconds):
+        """秒数转 HH:MM:SS 或 MM:SS"""
+        if seconds < 0:
+            return ""
+        h = int(seconds // 3600)
+        m = int((seconds % 3600) // 60)
+        s = int(seconds % 60)
+        if h > 0:
+            return f"⏳ {h}h{m:02d}m{s:02d}s"
+        return f"⏳ {m}m{s:02d}s"
+
+    def _run_ffmpeg_progress(self, cmd, total_duration, timeout=43200, outpath=None, bitrate_kbps=None):
+        """运行ffmpeg，基于文件大小显示进度和ETA"""
+        # 调试：打印实际命令（截取关键部分）
+        cmd_str = ' '.join(cmd)
+        if len(cmd_str) > 500:
+            # 只打印开头和结尾
+            cmd_preview = cmd_str[:200] + ' ... ' + cmd_str[-200:]
+        else:
+            cmd_preview = cmd_str
+        self._log(f"📋 CMD: {cmd_preview}")
+        
+        self._encode_start_time = time.time()
+        self._update_progress(0, "编码中...")
+
+        # 计算预期文件大小(字节)
+        expected_bytes = 0
+        if bitrate_kbps and total_duration:
+            expected_bytes = bitrate_kbps * 1000 / 8 * total_duration * 0.8  # 预估80%码率
+
+        # 后台线程：更新耗时 + 文件大小进度
+        _running = [True]
+        _last_size = [0]
+        _last_time = [time.time()]
+        def _tick():
+            try:
+                while _running[0]:
+                    elapsed = time.time() - self._encode_start_time
+                    em, es = divmod(int(elapsed), 60)
+                    eh, em = divmod(em, 60)
+
+                    # 检查输出文件大小
+                    size_info = ""
+                    pct = 0
+                    if outpath and expected_bytes > 0 and os.path.exists(outpath):
+                        try:
+                            cur_size = os.path.getsize(outpath)
+                            pct = min(cur_size / expected_bytes * 100, 99)
+                            dt = time.time() - _last_time[0]
+                            if dt > 2:
+                                rate = (cur_size - _last_size[0]) / dt
+                                _last_size[0] = cur_size
+                                _last_time[0] = time.time()
+                                if rate > 0:
+                                    remaining = (expected_bytes - cur_size) / rate
+                                    rm, rs = divmod(int(remaining), 60)
+                                    rh, rm = divmod(rm, 60)
+                                    size_info = f" | 📦 {cur_size/1048576:.0f}MB → {expected_bytes/1048576:.0f}MB | ⏳ {rh}h{rm:02d}m{rs:02d}s"
+                                else:
+                                    size_info = f" | 📦 {cur_size/1048576:.0f}MB"
+                            elif os.path.exists(outpath):
+                                cur_size = os.path.getsize(outpath)
+                                size_info = f" | 📦 {cur_size/1048576:.0f}MB"
+                        except:
+                            pass
+                    elif outpath and os.path.exists(outpath):
+                        try:
+                            cur_size = os.path.getsize(outpath)
+                            size_info = f" | 📦 {cur_size/1048576:.0f}MB"
+                        except:
+                            pass
+
+                    self._update_progress(pct, f"⏱ {eh:02d}:{em:02d}:{es:02d}{size_info}")
+                    time.sleep(3)
+            except Exception:
+                pass  # 线程异常静默处理
+
+        ticker = threading.Thread(target=_tick, daemon=True)
+        ticker.start()
+
+        try:
+            self._current_proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            # 用线程读取stderr，防止缓冲区满导致死锁
+            stderr_chunks = []
+            def _read_stderr():
+                try:
+                    while True:
+                        chunk = self._current_proc.stderr.read(4096)
+                        if not chunk:
+                            break
+                        stderr_chunks.append(chunk)
+                except:
+                    pass
+            stderr_thread = threading.Thread(target=_read_stderr, daemon=True)
+            stderr_thread.start()
+            
+            # 等待进程结束，同时检查取消标志
+            while self._current_proc.poll() is None:
+                if self._cancel:
+                    self._current_proc.kill()
+                    self._log("⏹ 已终止ffmpeg进程")
+                    break
+                time.sleep(0.1)
+            
+            if not self._cancel:
+                self._current_proc.wait(timeout=timeout)
+            stderr_thread.join(timeout=5)
+            stderr_data = b''.join(stderr_chunks)
+            returncode = self._current_proc.returncode
+            if returncode != 0 and stderr_data:
+                err_text = stderr_data.decode('utf-8', errors='replace')[-500:]
+                self._log(f"❌ ffmpeg错误:\n{err_text}")
+        except subprocess.TimeoutExpired:
+            self._log("❌ 超时终止")
+            try: self._current_proc.kill()
+            except: pass
+            returncode = 1
+        except Exception as e:
+            self._log(f"❌ 错误: {e}")
+            returncode = 1
+        finally:
+            self._current_proc = None
+
+        _running[0] = False
+        # 等待ticker线程退出，避免后续GUI更新冲突
+        ticker.join(timeout=5)
+
+        elapsed = time.time() - self._encode_start_time
+
+        # 最终文件大小
+        final_info = ""
+        if outpath and os.path.exists(outpath):
+            try:
+                final_mb = os.path.getsize(outpath) / 1048576
+                final_info = f" | 📦 {final_mb:.1f}MB"
+            except:
+                pass
+
+        if returncode == 0:
+            self._update_progress(100, f"✅ {elapsed:.1f}s{final_info}")
+        else:
+            self._update_progress(0, "❌ 失败")
+
+        return returncode
+
+    # ═══════════════════════════════════════
+    #  片头片尾
+    # ═══════════════════════════════════════
+    def _select_intro(self):
+        p = filedialog.askopenfilename(filetypes=[("视频", "*.mp4 *.mkv *.avi *.flv *.ts")])
+        if p:
+            self.intro_video = p
+            self.intro_label.config(text=os.path.basename(p), fg=C["text"])
+            self._save_config()
+
+    def _select_outro(self):
+        p = filedialog.askopenfilename(filetypes=[("视频", "*.mp4 *.mkv *.avi *.flv *.ts")])
+        if p:
+            self.outro_video = p
+            self.outro_label.config(text=os.path.basename(p), fg=C["text"])
+            self._save_config()
+
+    def _clear_intro_outro(self, which):
+        if which == "intro":
+            self.intro_video = None
+            self.intro_label.config(text="无", fg=C["text3"])
+        else:
+            self.outro_video = None
+            self.outro_label.config(text="无", fg=C["text3"])
+        self._save_config()
+
+    def _append_intro_outro(self, video_path):
+        """给视频加上片头片尾，返回最终路径"""
+        if not self.intro_video and not self.outro_video:
+            return video_path
+
+        parts = []
+        if self.intro_video:
+            parts.append(self.intro_video)
+        parts.append(video_path)
+        if self.outro_video:
+            parts.append(self.outro_video)
+
+        if len(parts) == 1:
+            return video_path
+
+        # 生成concat列表
+        list_file = video_path + "_intro_outro.txt"
+        with open(list_file, 'w', encoding='utf-8') as f:
+            for p in parts:
+                # ffmpeg concat需要正斜杠或双反斜杠
+                fp = p.replace('\\', '/')
+                f.write(f"file '{fp}'\n")
+
+        # 输出路径
+        base, ext = os.path.splitext(video_path)
+        out_path = base + ext
+
+        cmd = ['ffmpeg', '-y', '-fflags', '+genpts+discardcorrupt',
+               '-f', 'concat', '-safe', '0', '-i', list_file,
+               '-c', 'copy', '-movflags', '+faststart', out_path]
+
+        self._log(f"📎 合并片头片尾...")
+        r = self._run_ffmpeg_progress(cmd, 0, timeout=3600)
+
+        # 清理临时文件
+        try: os.remove(list_file)
+        except: pass
+
+        if r == 0:
+            # 删除中间文件，保留最终文件
+            try: os.remove(video_path)
+            except: pass
+            self._log(f"✅ 片头片尾合并完成: {os.path.basename(out_path)}")
+            return out_path
+        else:
+            self._log(f"❌ 片头片尾合并失败，保留原文件")
+            return video_path
+
+    def _toggle_merge(self):
+        """启用/禁用合并选项"""
+        enabled = self.merge_var.get()
+        is_count = self.merge_mode.get() == "count"
+        # 按数量模式：启用Spinbox；文件夹模式：禁用Spinbox
+        spin_state = "normal" if enabled and is_count else "disabled"
+        try:
+            self.merge_count_spin.config(state=spin_state)
+        except: pass
+
+    def _merge_videos(self, video_list, out_dir):
+        """合并视频列表，返回合并后的文件路径列表"""
+        count = self.merge_count.get()
+        merged = []
+        codec = self.codec_var.get()
+        bitrate = self.bitrate_var.get()
+        total_groups = (len(video_list) + count - 1) // count
+
+        for i in range(0, len(video_list), count):
+            group = video_list[i:i+count]
+            grp_idx = i // count + 1
+            if len(group) == 1:
+                merged.append(group[0])
+                continue
+
+            self._log(f"🔗 合并 [{grp_idx}/{total_groups}]: {len(group)}个视频")
+            self._set_status(f"🔗 合并中 [{grp_idx}/{total_groups}]...")
+            # 生成合并列表文件
+            list_file = os.path.join(out_dir, f"_merge_list_{i}.txt")
+            with open(list_file, 'w', encoding='utf-8') as f:
+                for v in group:
+                    f.write(f"file '{v}'\n")
+
+            out_name = f"_merged_{i//count+1}.mp4"
+            out_path = os.path.join(out_dir, out_name)
+
+            cmd = ['ffmpeg', '-y', '-fflags', '+genpts+discardcorrupt',
+                   '-f', 'concat', '-safe', '0', '-i', list_file,
+                   '-c', 'copy']
+            cmd.append(out_path)
+
+            r = subprocess.run(cmd, stdout=subprocess.DEVNULL, timeout=7200)
+            try: os.remove(list_file)
+            except: pass
+
+            if r.returncode == 0:
+                # 修正DTS时间戳（快速remux，不重新编码）
+                fix_cmd = ['ffmpeg', '-y', '-fflags', '+genpts+igndts+discardcorrupt',
+                           '-i', out_path,
+                           '-c', 'copy', '-movflags', '+faststart',
+                           out_path + '.fix.mp4']
+                rf = subprocess.run(fix_cmd, stdout=subprocess.DEVNULL, timeout=7200)
+                if rf.returncode == 0:
+                    try:
+                        os.remove(out_path)
+                        os.rename(out_path + '.fix.mp4', out_path)
+                    except:
+                        try: os.remove(out_path + '.fix.mp4')
+                        except: pass
+                merged.append(out_path)
+                self._log(f"  ✅ 合并完成: {out_name}")
+            else:
+                self._log(f"  ❌ 合并失败 (code={r.returncode})")
+                # 失败时用第一个视频
+                merged.append(group[0])
+
+        return merged
+
+    # ═══════════════════════════════════════
+    #  配置保存/加载（框选区域、模板路径等）
+    # ═══════════════════════════════════════
+    def _save_config(self):
+        """保存当前设置到JSON文件"""
+        cfg = {
+            "frame_template": self.frame_template,
+            "frame_roi": self.frame_roi,
+            "frame_videos": self.frame_videos,
+            "frame_folder_name": self.frame_folder_name,
+            "pip_template": self.pip_template,
+            "pip_regions": self.pip_regions,
+            "pip_lists": {k: v["files"] for k, v in self.pip_lists.items()},
+            "center_folder_groups": self.center_folder_groups,
+            "frame_folder_groups": self.frame_folder_groups,
+            "rotate_folder_groups": self.rotate_folder_groups,
+            "codec": self.codec_var.get(),
+            "bitrate": self.bitrate_var.get(),
+            "merge_count": self.merge_count.get(),
+            "merge": self.merge_var.get(),
+            "output_dir": self.out_dir.get(),
+            "game_mode": self.game_mode.get(),
+            "rotate_dir": self.rotate_dir.get() if hasattr(self, 'rotate_dir') else "cw",
+            "pip_folder_name": self.pip_folder_name,
+            "intro_video": self.intro_video,
+            "outro_video": self.outro_video,
+        }
+        try:
+            with open(self._config_path, "w", encoding="utf-8") as f:
+                json.dump(cfg, f, ensure_ascii=False, indent=2)
+            print(f"[配置] 已保存到 {self._config_path}", flush=True)
+        except Exception as e:
+            print(f"[配置] 保存失败: {e}", flush=True)
+
+    def _load_config(self):
+        """从JSON文件加载上次的设置"""
+        if not os.path.exists(self._config_path):
+            print("[配置] 无历史配置，使用默认值", flush=True)
+            return
+        try:
+            with open(self._config_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+
+            # Windows路径兼容：正斜杠→反斜杠
+            def win_path(p):
+                return p.replace("/", "\\") if p else p
+
+            # 套框模式
+            tpl = win_path(cfg.get("frame_template"))
+            if tpl and os.path.exists(tpl):
+                self.frame_template = tpl
+                ext = os.path.splitext(self.frame_template)[1].lower()
+                is_video = ext in ('.mp4', '.mkv', '.avi', '.flv', '.ts')
+                label = f"{'🎬' if is_video else '🖼'} {os.path.basename(self.frame_template)}"
+                if hasattr(self, 'frame_template_label'):
+                    self.frame_template_label.config(text=label, fg=C["text"])
+            if cfg.get("frame_roi"):
+                self.frame_roi = tuple(cfg["frame_roi"])
+                x, y, w, h = self.frame_roi
+                if hasattr(self, 'frame_roi_label'):
+                    self.frame_roi_label.config(text=f"✅ 已框选: x={x} y={y} w={w} h={h}")
+            # 加载套框视频列表
+            if cfg.get("frame_videos"):
+                self.frame_videos = [win_path(f) for f in cfg["frame_videos"] if os.path.exists(win_path(f))]
+                if hasattr(self, 'frame_listbox'):
+                    self.frame_listbox.delete(0, tk.END)
+                    for f in self.frame_videos:
+                        self.frame_listbox.insert(tk.END, os.path.basename(f))
+            # 加载文件夹名
+            self.frame_folder_name = cfg.get("frame_folder_name")
+
+            # 画中画模式
+            pip_tpl = win_path(cfg.get("pip_template"))
+            if pip_tpl and os.path.exists(pip_tpl):
+                self.pip_template = pip_tpl
+                if hasattr(self, 'pip_template_label'):
+                    self.pip_template_label.config(text=os.path.basename(self.pip_template), fg=C["text"])
+            if cfg.get("pip_regions"):
+                self.pip_regions = {k: tuple(v) for k, v in cfg["pip_regions"].items()}
+                if hasattr(self, 'pip_region_label'):
+                    txts = [f"{k}: {v}" for k, v in self.pip_regions.items()]
+                    self.pip_region_label.config(text="✅ " + " | ".join(txts))
+            # 加载画中画视频文件列表
+            if cfg.get("pip_lists"):
+                for k, files in cfg["pip_lists"].items():
+                    if k in self.pip_lists:
+                        valid = [win_path(f) for f in files if os.path.exists(win_path(f))]
+                        self.pip_lists[k]["files"] = valid
+                        if "listbox" in self.pip_lists[k]:
+                            self.pip_lists[k]["listbox"].delete(0, tk.END)
+                            for f in valid:
+                                self.pip_lists[k]["listbox"].insert(tk.END, os.path.basename(f))
+            # 加载文件夹组
+            if cfg.get("center_folder_groups"):
+                self.center_folder_groups = cfg["center_folder_groups"]
+                if "center" in self.pip_lists and "listbox" in self.pip_lists["center"]:
+                    lb = self.pip_lists["center"]["listbox"]
+                    for g in self.center_folder_groups:
+                        lb.insert(tk.END, f"📁 {g['name']} ({len(g['videos'])}个视频)")
+            # 加载套框文件夹组
+            if cfg.get("frame_folder_groups"):
+                self.frame_folder_groups = cfg["frame_folder_groups"]
+                if hasattr(self, 'frame_listbox'):
+                    for g in self.frame_folder_groups:
+                        self.frame_listbox.insert(tk.END, f"📁 {g['name']} ({len(g['videos'])}个视频)")
+            # 加载横转竖文件夹组
+            if cfg.get("rotate_folder_groups"):
+                self.rotate_folder_groups = cfg["rotate_folder_groups"]
+                if hasattr(self, 'rotate_listbox'):
+                    for g in self.rotate_folder_groups:
+                        self.rotate_listbox.insert(tk.END, f"📁 {g['name']} ({len(g['videos'])}个视频)")
+            # 加载文件夹名
+            self.pip_folder_name = cfg.get("pip_folder_name")
+            # 加载片头片尾
+            intro = cfg.get("intro_video")
+            if intro:
+                intro = win_path(intro)
+                if os.path.exists(intro):
+                    self.intro_video = intro
+                    if hasattr(self, 'intro_label'):
+                        self.intro_label.config(text=os.path.basename(intro), fg=C["text"])
+            outro = cfg.get("outro_video")
+            if outro:
+                outro = win_path(outro)
+                if os.path.exists(outro):
+                    self.outro_video = outro
+                    if hasattr(self, 'outro_label'):
+                        self.outro_label.config(text=os.path.basename(outro), fg=C["text"])
+
+            # 通用设置
+            if cfg.get("codec"): self.codec_var.set(cfg["codec"])
+            if cfg.get("bitrate"): self.bitrate_var.set(cfg["bitrate"])
+            if "merge_count" in cfg: self.merge_count.set(cfg["merge_count"])
+            if "merge" in cfg:
+                self.merge_var.set(cfg["merge"])
+                self._toggle_merge()
+            if cfg.get("output_dir"): self.out_dir.set(win_path(cfg["output_dir"]))
+            if "game_mode" in cfg: self.game_mode.set(cfg["game_mode"])
+            if "rotate_dir" in cfg and hasattr(self, 'rotate_dir'): self.rotate_dir.set(cfg["rotate_dir"])
+
+            print(f"[配置] 已加载: 套框ROI={self.frame_roi}, 画中画模板={self.pip_template is not None}, 画中画区域={list(self.pip_regions.keys())}", flush=True)
+        except Exception as e:
+            print(f"[配置] 加载失败: {e}", flush=True)
+
+
+if __name__ == "__main__":
+    try:
+        root = tk.Tk()
+        VideoProcessor(root)
+        root.mainloop()
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        input(f"\n❌ 错误: {e}\n按回车退出...")

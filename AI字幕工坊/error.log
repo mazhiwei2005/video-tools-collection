@@ -1,0 +1,17 @@
+libpng warning: iCCP: known incorrect sRGB profile
+libpng warning: iCCP: known incorrect sRGB profile
+Exception in thread Thread-8 (_readerthread):
+Traceback (most recent call last):
+  File "C:\Users\Lenovo\anaconda3\Lib\threading.py", line 1075, in _bootstrap_inner
+    self.run()
+  File "C:\Users\Lenovo\anaconda3\Lib\threading.py", line 1012, in run
+    self._target(*self._args, **self._kwargs)
+  File "C:\Users\Lenovo\anaconda3\Lib\subprocess.py", line 1599, in _readerthread
+    buffer.append(fh.read())
+                  ^^^^^^^^^
+UnicodeDecodeError: 'gbk' codec can't decode byte 0xbb in position 2460: illegal multibyte sequence
+forrtl: error (200): program aborting due to window-CLOSE event
+Image              PC                Routine            Line        Source             
+KERNELBASE.dll     00007FFE4CBF348D  Unknown               Unknown  Unknown
+KERNEL32.DLL       00007FFE4F16E957  Unknown               Unknown  Unknown
+ntdll.dll          00007FFE5010427C  Unknown               Unknown  Unknown

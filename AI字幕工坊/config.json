@@ -1,0 +1,36 @@
+{
+  "app_name": "AI鍔ㄦ极瀛楀箷宸ュ潑",
+  "version": "1.0.0",
+  "theme": "dark",
+  "language": "zh",
+  "translation": {
+    "default_engine": "baidu_web",
+    "default_style": "anime",
+    "source_lang": "ja",
+    "target_lang": "zh",
+    "cache_enabled": true,
+    "ollama_model": "qwen2.5:7b-instruct-q4_K_M"
+  },
+  "whisper": {
+    "model_size": "large-v3",
+    "device": "auto",
+    "compute_type": "float16",
+    "language": "ja"
+  },
+  "video": {
+    "player": "vlc",
+    "hw_accel": "auto"
+  },
+  "ui": {
+    "theme": "bilibili_dark",
+    "font_family": "Microsoft YaHei UI",
+    "font_size": 12
+  },
+  "mimo_api_key": "tp-cq1yify919qr98ezgvtqqzthqsssvsetuyxx4ng3zqe7jmv3",
+  "ollama_model": "sakura",
+  "proofread_model": "qwen2.5:7b-instruct-q4_K_M",
+  "anime_name": "弱弱老师",
+  "initial_prompt": "",
+  "character_settings": "",
+  "scene_description": ""
+}
