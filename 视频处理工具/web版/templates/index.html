@@ -1,0 +1,1907 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>视频处理工具 — VideoCraft</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/lucide@latest"></script>
+<style>
+/* ═══════════════════════════════════════════
+   Design Tokens — Dieter Rams × Tadao Ando
+   ═══════════════════════════════════════════ */
+:root {
+  --bg-0: #06080c;
+  --bg-1: #0a0e14;
+  --bg-2: #111822;
+  --bg-3: #1a2332;
+  --bg-4: #222d3d;
+  --border: #2a3545;
+  --border-focus: #4c9aff;
+  --accent: #4c9aff;
+  --accent-glow: rgba(76,154,255,0.15);
+  --coral: #ff6b6b;
+  --coral-glow: rgba(255,107,107,0.15);
+  --green: #4ecdc4;
+  --green-glow: rgba(78,205,196,0.15);
+  --amber: #f0a500;
+  --amber-glow: rgba(240,165,0,0.15);
+  --text-0: #f0f4f8;
+  --text-1: #c8d6e5;
+  --text-2: #7a8a9e;
+  --text-3: #4a5568;
+  --radius: 12px;
+  --radius-sm: 8px;
+  --radius-xs: 6px;
+  --shadow: 0 4px 24px rgba(0,0,0,0.3);
+  --shadow-lg: 0 8px 48px rgba(0,0,0,0.4);
+  --transition: 200ms cubic-bezier(0.4, 0, 0.2, 1);
+  --font-sans: 'Inter', -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Consolas', monospace;
+  --sidebar-w: 260px;
+}
+
+/* ═══════════════════════════════════════════
+   Reset & Base
+   ═══════════════════════════════════════════ */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { font-size: 14px; -webkit-font-smoothing: antialiased; }
+body {
+  font-family: var(--font-sans);
+  background: var(--bg-0);
+  color: var(--text-1);
+  line-height: 1.6;
+  overflow: hidden;
+  height: 100vh;
+}
+::selection { background: var(--accent); color: #fff; }
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--bg-4); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-3); }
+
+/* ═══════════════════════════════════════════
+   Layout: Sidebar + Main
+   ═══════════════════════════════════════════ */
+.app { display: flex; height: 100vh; }
+
+/* ── Sidebar ── */
+.sidebar {
+  width: var(--sidebar-w);
+  min-width: var(--sidebar-w);
+  background: var(--bg-1);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  z-index: 10;
+}
+.sidebar-header {
+  padding: 24px 20px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.logo-icon {
+  width: 40px; height: 40px;
+  background: linear-gradient(135deg, var(--accent), #7c5cff);
+  border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  color: #fff;
+  font-size: 20px;
+  box-shadow: 0 4px 16px rgba(76,154,255,0.3);
+}
+.logo-text h1 {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-0);
+  letter-spacing: -0.5px;
+}
+.logo-text p {
+  font-size: 11px;
+  color: var(--text-3);
+  margin-top: 2px;
+}
+
+/* ── Nav ── */
+.nav { flex: 1; padding: 12px 8px; overflow-y: auto; }
+.nav-section {
+  margin-bottom: 8px;
+}
+.nav-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  color: var(--text-3);
+  padding: 8px 12px 6px;
+}
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--transition);
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 500;
+  position: relative;
+  user-select: none;
+}
+.nav-item:hover {
+  background: var(--bg-2);
+  color: var(--text-1);
+}
+.nav-item.active {
+  background: var(--accent-glow);
+  color: var(--accent);
+}
+.nav-item.active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 20px;
+  background: var(--accent);
+  border-radius: 0 3px 3px 0;
+}
+.nav-item i { width: 18px; height: 18px; flex-shrink: 0; }
+.nav-badge {
+  margin-left: auto;
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 10px;
+  background: var(--bg-3);
+  color: var(--text-3);
+  font-weight: 600;
+}
+
+/* ── Sidebar Footer ── */
+.sidebar-footer {
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+}
+.gpu-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-3);
+}
+.gpu-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 8px var(--green-glow);
+  animation: pulse 2s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* ── Main Content ── */
+.main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg-0);
+}
+
+/* ── Top Bar ── */
+.topbar {
+  height: 56px;
+  min-height: 56px;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 24px;
+  gap: 16px;
+}
+.topbar-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-0);
+}
+.topbar-subtitle {
+  font-size: 12px;
+  color: var(--text-3);
+  margin-left: 4px;
+}
+.topbar-spacer { flex: 1; }
+.topbar-actions { display: flex; gap: 8px; }
+
+/* ── Content Area ── */
+.content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px;
+}
+
+/* ═══════════════════════════════════════════
+   Components
+   ═══════════════════════════════════════════ */
+
+/* ── Cards ── */
+.card {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+  margin-bottom: 16px;
+  transition: border-color var(--transition);
+}
+.card:hover { border-color: var(--bg-4); }
+.card-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.card-icon {
+  width: 32px; height: 32px;
+  border-radius: var(--radius-xs);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 16px;
+}
+.card-icon.blue { background: var(--accent-glow); color: var(--accent); }
+.card-icon.coral { background: var(--coral-glow); color: var(--coral); }
+.card-icon.green { background: var(--green-glow); color: var(--green); }
+.card-icon.amber { background: var(--amber-glow); color: var(--amber); }
+.card-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-0);
+}
+.card-desc {
+  font-size: 12px;
+  color: var(--text-3);
+  margin-top: 2px;
+}
+
+/* ── Grid Layout ── */
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+.grid-main { display: grid; grid-template-columns: 1fr 380px; gap: 20px; }
+
+/* ── Upload Zone ── */
+.upload-zone {
+  border: 2px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 48px 24px;
+  text-align: center;
+  cursor: pointer;
+  transition: all var(--transition);
+  position: relative;
+  overflow: hidden;
+}
+.upload-zone:hover {
+  border-color: var(--accent);
+  background: var(--accent-glow);
+}
+.upload-zone.dragover {
+  border-color: var(--accent);
+  background: var(--accent-glow);
+  transform: scale(1.01);
+}
+.upload-zone.has-file {
+  border-color: var(--green);
+  border-style: solid;
+  background: var(--green-glow);
+  padding: 24px;
+}
+.upload-icon {
+  font-size: 48px;
+  color: var(--text-3);
+  margin-bottom: 16px;
+  transition: all var(--transition);
+}
+.upload-zone:hover .upload-icon { color: var(--accent); transform: translateY(-4px); }
+.upload-text { font-size: 14px; color: var(--text-2); margin-bottom: 8px; }
+.upload-hint { font-size: 12px; color: var(--text-3); }
+.upload-file-info {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  text-align: left;
+}
+.upload-file-icon {
+  width: 48px; height: 48px;
+  background: var(--green-glow);
+  border-radius: var(--radius-sm);
+  display: flex; align-items: center; justify-content: center;
+  color: var(--green);
+  font-size: 24px;
+  flex-shrink: 0;
+}
+.upload-file-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-0);
+  word-break: break-all;
+}
+.upload-file-meta {
+  font-size: 12px;
+  color: var(--text-2);
+  margin-top: 4px;
+}
+.upload-file-remove {
+  margin-left: auto;
+  padding: 6px;
+  border-radius: var(--radius-xs);
+  cursor: pointer;
+  color: var(--text-3);
+  transition: all var(--transition);
+}
+.upload-file-remove:hover { background: var(--coral-glow); color: var(--coral); }
+
+/* ── Form Controls ── */
+.form-group { margin-bottom: 14px; }
+.form-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.form-input, .form-select {
+  width: 100%;
+  padding: 10px 14px;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-0);
+  font-size: 13px;
+  font-family: var(--font-sans);
+  transition: all var(--transition);
+  outline: none;
+}
+.form-input:focus, .form-select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+.form-select { cursor: pointer; }
+.form-select option { background: var(--bg-2); color: var(--text-1); }
+.form-row { display: flex; gap: 10px; }
+.form-row > * { flex: 1; }
+
+/* ── Buttons ── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 20px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 600;
+  font-family: var(--font-sans);
+  cursor: pointer;
+  transition: all var(--transition);
+  border: none;
+  outline: none;
+  user-select: none;
+  white-space: nowrap;
+}
+.btn-primary {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 2px 12px rgba(76,154,255,0.3);
+}
+.btn-primary:hover {
+  background: #5aa3ff;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 20px rgba(76,154,255,0.4);
+}
+.btn-primary:active { transform: translateY(0); }
+.btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+.btn-danger {
+  background: var(--coral);
+  color: #fff;
+  box-shadow: 0 2px 12px rgba(255,107,107,0.3);
+}
+.btn-danger:hover { background: #ff5252; }
+.btn-ghost {
+  background: transparent;
+  color: var(--text-2);
+  border: 1px solid var(--border);
+}
+.btn-ghost:hover { background: var(--bg-3); color: var(--text-1); }
+.btn-sm { padding: 6px 12px; font-size: 12px; }
+.btn-lg { padding: 14px 28px; font-size: 15px; border-radius: var(--radius); }
+.btn-block { width: 100%; }
+.btn-group { display: flex; gap: 8px; }
+
+/* ── Preset Chips ── */
+.preset-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+.preset-chip {
+  padding: 6px 12px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition);
+  background: var(--bg-3);
+  color: var(--text-2);
+  border: 1px solid transparent;
+  user-select: none;
+}
+.preset-chip:hover { background: var(--bg-4); color: var(--text-1); }
+.preset-chip.active {
+  background: var(--accent-glow);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* ── Progress ── */
+.progress-container { margin-top: 16px; }
+.progress-bar-bg {
+  height: 6px;
+  background: var(--bg-3);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+.progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), #7c5cff);
+  border-radius: 3px;
+  transition: width 500ms ease;
+  position: relative;
+}
+.progress-bar::after {
+  content: '';
+  position: absolute;
+  right: 0; top: 0;
+  width: 20px; height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3));
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+@keyframes shimmer {
+  0% { opacity: 0; }
+  50% { opacity: 1; }
+  100% { opacity: 0; }
+}
+.progress-info {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--text-3);
+}
+.progress-pct { color: var(--accent); font-weight: 600; font-family: var(--font-mono); }
+
+/* ── Command Preview (Terminal) ── */
+.terminal {
+  background: #0d1117;
+  border: 1px solid #21262d;
+  border-radius: var(--radius-sm);
+  padding: 14px 16px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.8;
+  color: #8b949e;
+  overflow-x: auto;
+  max-height: 200px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.terminal .cmd-keyword { color: #ff7b72; }
+.terminal .cmd-flag { color: #79c0ff; }
+.terminal .cmd-value { color: #a5d6ff; }
+.terminal .cmd-path { color: #7ee787; }
+.terminal .cmd-comment { color: #484f58; font-style: italic; }
+
+/* ── Log Output ── */
+.log-output {
+  background: #0d1117;
+  border: 1px solid #21262d;
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.7;
+  color: #8b949e;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.log-output .log-time { color: #484f58; }
+.log-output .log-success { color: #3fb950; }
+.log-output .log-error { color: #f85149; }
+.log-output .log-info { color: #58a6ff; }
+.log-output .log-warn { color: #d29922; }
+
+/* ── Template Preview ── */
+.template-preview {
+  width: 100%;
+  aspect-ratio: 16/9;
+  background: var(--bg-1);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  position: relative;
+  margin-bottom: 12px;
+}
+.template-preview img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+.template-preview .roi-overlay {
+  position: absolute;
+  border: 2px dashed var(--coral);
+  background: rgba(255,107,107,0.1);
+  border-radius: 4px;
+  pointer-events: none;
+}
+
+/* ── Status Badge ── */
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.status-badge.ready { background: var(--green-glow); color: var(--green); }
+.status-badge.processing { background: var(--amber-glow); color: var(--amber); }
+.status-badge.done { background: var(--green-glow); color: var(--green); }
+.status-badge.error { background: var(--coral-glow); color: var(--coral); }
+.status-badge.idle { background: var(--bg-3); color: var(--text-3); }
+
+/* ── Stats Row ── */
+.stats-row {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.stat-card {
+  flex: 1;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 14px 16px;
+  text-align: center;
+}
+.stat-value {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text-0);
+  font-family: var(--font-mono);
+  line-height: 1.2;
+}
+.stat-label {
+  font-size: 11px;
+  color: var(--text-3);
+  margin-top: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* ── Mode Page ── */
+.mode-page { display: none; }
+.mode-page.active { display: block; animation: fadeIn 300ms ease; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+/* ── Tooltip ── */
+.tooltip {
+  position: relative;
+  cursor: help;
+}
+.tooltip::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%) translateY(-4px);
+  padding: 6px 10px;
+  background: var(--bg-4);
+  color: var(--text-1);
+  font-size: 11px;
+  border-radius: var(--radius-xs);
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: all var(--transition);
+  z-index: 100;
+}
+.tooltip:hover::after { opacity: 1; transform: translateX(-50%) translateY(-8px); }
+
+/* ── Responsive ── */
+@media (max-width: 1200px) {
+  .grid-main { grid-template-columns: 1fr; }
+}
+@media (max-width: 768px) {
+  .sidebar { width: 60px; min-width: 60px; }
+  .sidebar .logo-text, .sidebar .nav-label, .sidebar .nav-item span, .sidebar .nav-badge { display: none; }
+  .sidebar .nav-item { justify-content: center; padding: 12px; }
+  .sidebar .gpu-status span { display: none; }
+  .content { padding: 16px; }
+  .grid-2, .grid-3 { grid-template-columns: 1fr; }
+}
+
+/* ── Animations ── */
+.fade-in { animation: fadeIn 300ms ease; }
+.slide-up { animation: slideUp 400ms ease; }
+@keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+
+/* ── Empty State ── */
+.empty-state {
+  text-align: center;
+  padding: 48px 24px;
+  color: var(--text-3);
+}
+.empty-state i { font-size: 48px; margin-bottom: 16px; opacity: 0.3; }
+.empty-state p { font-size: 13px; }
+
+/* ── Hidden file input ── */
+.hidden { display: none !important; }
+
+/* ── Spin animation for loading ── */
+.spin { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── ROI Editor Overlay ── */
+.roi-editor {
+  position: relative;
+  cursor: crosshair;
+}
+.roi-rect {
+  position: absolute;
+  border: 2px solid var(--accent);
+  background: rgba(76,154,255,0.1);
+  pointer-events: none;
+}
+</style>
+</head>
+<body>
+
+<div class="app">
+  <!-- ═══════════════════ Sidebar ═══════════════════ -->
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <div class="logo">
+        <div class="logo-icon"><i data-lucide="video"></i></div>
+        <div class="logo-text">
+          <h1>VideoCraft</h1>
+          <p>视频处理工具</p>
+        </div>
+      </div>
+    </div>
+
+    <nav class="nav">
+      <div class="nav-section">
+        <div class="nav-label">处理模式</div>
+        <div class="nav-item active" data-mode="frame" onclick="switchMode('frame')">
+          <i data-lucide="frame"></i>
+          <span>套框</span>
+          <span class="nav-badge">ROI</span>
+        </div>
+        <div class="nav-item" data-mode="pip" onclick="switchMode('pip')">
+          <i data-lucide="layout-grid"></i>
+          <span>画中画</span>
+          <span class="nav-badge">PIP</span>
+        </div>
+        <div class="nav-item" data-mode="rotate" onclick="switchMode('rotate')">
+          <i data-lucide="rotate-cw"></i>
+          <span>横转竖</span>
+        </div>
+        <div class="nav-item" data-mode="format" onclick="switchMode('format')">
+          <i data-lucide="file-video"></i>
+          <span>格式转换</span>
+        </div>
+        <div class="nav-item" data-mode="pipeline" onclick="switchMode('pipeline')">
+          <i data-lucide="git-branch"></i>
+          <span>流水线</span>
+          <span class="nav-badge">NEW</span>
+        </div>
+        <div class="nav-item" data-mode="merge" onclick="switchMode('merge')">
+          <i data-lucide="merge"></i>
+          <span>合并视频</span>
+        </div>
+      </div>
+
+      <div class="nav-section">
+        <div class="nav-label">工具</div>
+        <div class="nav-item" data-mode="preview" onclick="switchMode('preview')">
+          <i data-lucide="terminal"></i>
+          <span>命令预览</span>
+        </div>
+      </div>
+    </nav>
+
+    <div class="sidebar-footer">
+      <div class="gpu-status">
+        <div class="gpu-dot"></div>
+        <span>RTX 3070 · NVENC Ready</span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ═══════════════════ Main ═══════════════════ -->
+  <main class="main">
+    <div class="topbar">
+      <span class="topbar-title" id="topbar-title">套框模式</span>
+      <span class="topbar-subtitle" id="topbar-subtitle">将视频嵌入模板指定区域</span>
+      <div class="topbar-spacer"></div>
+      <div class="topbar-actions">
+        <span class="status-badge idle" id="status-badge">
+          <i data-lucide="circle" style="width:8px;height:8px"></i>
+          就绪
+        </span>
+      </div>
+    </div>
+
+    <div class="content">
+      <!-- ═══════════════ 套框 Mode ═══════════════ -->
+      <div class="mode-page active" id="page-frame">
+        <div class="grid-main">
+          <div>
+            <!-- Upload -->
+            <div class="card">
+              <div class="card-header">
+                <div class="card-icon blue"><i data-lucide="upload-cloud"></i></div>
+                <div>
+                  <div class="card-title">导入视频</div>
+                  <div class="card-desc">拖放视频文件到此处，或点击选择</div>
+                </div>
+              </div>
+              <div class="upload-zone" id="upload-frame" onclick="document.getElementById('file-frame').click()">
+                <input type="file" id="file-frame" class="hidden" accept="video/*" onchange="handleUpload(this, 'frame')">
+                <div class="upload-placeholder">
+                  <div class="upload-icon"><i data-lucide="film"></i></div>
+                  <div class="upload-text">拖放视频文件到这里</div>
+                  <div class="upload-hint">支持 MP4 / MKV / AVI / MOV 等格式</div>
+                </div>
+                <div class="upload-file-info hidden" id="file-info-frame"></div>
+              </div>
+            </div>
+
+            <!-- Template -->
+            <div class="card">
+              <div class="card-header">
+                <div class="card-icon coral"><i data-lucide="image"></i></div>
+                <div>
+                  <div class="card-title">模板图片</div>
+                  <div class="card-desc">选择套框模板（PNG/JPG）</div>
+                </div>
+              </div>
+              <div class="template-preview" id="tpl-preview-frame">
+                <span style="color:var(--text-3);font-size:13px">未选择模板</span>
+              </div>
+              <div class="form-group">
+                <div class="form-label">模板路径</div>
+                <input type="text" class="form-input" id="tpl-path-frame" placeholder="C:\Users\...\template.png">
+              </div>
+              <div class="form-group">
+                <div class="form-label">ROI 区域 (x, y, w, h)</div>
+                <div class="form-row">
+                  <input type="number" class="form-input" id="roi-x" value="66" placeholder="X">
+                  <input type="number" class="form-input" id="roi-y" value="51" placeholder="Y">
+                  <input type="number" class="form-input" id="roi-w" value="1447" placeholder="W">
+                  <input type="number" class="form-input" id="roi-h" value="827" placeholder="H">
+                </div>
+                <button class="btn btn-ghost" onclick="previewLayout('frame')" style="margin-top:8px">
+                  <i data-lucide="eye"></i> 预览布局
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Right Panel -->
+          <div>
+            <!-- Encoding Settings -->
+            <div class="card">
+              <div class="card-header">
+                <div class="card-icon green"><i data-lucide="settings"></i></div>
+                <div>
+                  <div class="card-title">编码设置</div>
+                </div>
+              </div>
+              <div class="form-group">
+                <div class="form-label">预设</div>
+                <div class="preset-chips" id="presets-frame">
+                  <div class="preset-chip" data-codec="hevc_nvenc" data-bitrate="12000" onclick="applyPreset(this,'frame')">🎬 高质量</div>
+                  <div class="preset-chip active" data-codec="hevc_nvenc" data-bitrate="4500" onclick="applyPreset(this,'frame')">🎯 B站推荐</div>
+                  <div class="preset-chip" data-codec="hevc_nvenc" data-bitrate="6000" onclick="applyPreset(this,'frame')">⚡ 快速</div>
+                  <div class="preset-chip" data-codec="libx265" data-bitrate="3000" onclick="applyPreset(this,'frame')">📦 小文件</div>
+                </div>
+              </div>
+              <div class="form-row">
+                <div class="form-group">
+                  <div class="form-label">编码器</div>
+                  <select class="form-select" id="codec-frame">
+                    <option value="hevc_nvenc">HEVC NVENC (GPU)</option>
+                    <option value="h264_nvenc">H264 NVENC (GPU)</option>
+                    <option value="libx265">H265 软编码</option>
+                    <option value="libx264">H264 软编码</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <div class="form-label">码率 (kbps)</div>
+                  <input type="number" class="form-input" id="bitrate-frame" value="4500">
+                </div>
+              </div>
+            </div>
+
+            <!-- Action -->
+            <div class="card">
+              <button class="btn btn-primary btn-block btn-lg" id="btn-start-frame" onclick="startProcess('frame')">
+                <i data-lucide="play"></i> 开始处理
+              </button>
+              <div class="progress-container hidden" id="progress-frame">
+                <div class="progress-bar-bg">
+                  <div class="progress-bar" id="progress-bar-frame" style="width:0%"></div>
+                </div>
+                <div class="progress-info">
+                  <span id="progress-text-frame">准备中...</span>
+                  <span class="progress-pct" id="progress-pct-frame">0%</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Log -->
+            <div class="card">
+              <div class="card-header">
+                <div class="card-icon amber"><i data-lucide="scroll-text"></i></div>
+                <div class="card-title">处理日志</div>
+              </div>
+              <div class="log-output" id="log-frame">
+                <span class="log-comment">等待开始...</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══════════════ 画中画 Mode ═══════════════ -->
+      <div class="mode-page" id="page-pip">
+        <div class="grid-main">
+          <div>
+            <div class="card">
+              <div class="card-header">
+                <div class="card-icon blue"><i data-lucide="upload-cloud"></i></div>
+                <div>
+                  <div class="card-title">导入正片视频</div>
+                  <div class="card-desc">拖放视频文件到此处</div>
+                </div>
+              </div>
+              <div class="upload-zone" id="upload-pip" onclick="document.getElementById('file-pip').click()">
+                <input type="file" id="file-pip" class="hidden" accept="video/*" onchange="handleUpload(this, 'pip')">
+                <div class="upload-placeholder">
+                  <div class="upload-icon"><i data-lucide="film"></i></div>
+                  <div class="upload-text">拖放视频文件到这里</div>
+                  <div class="upload-hint">正片内容将嵌入模板区域</div>
+                </div>
+                <div class="upload-file-info hidden" id="file-info-pip"></div>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-header">
+                <div class="card-icon coral"><i data-lucide="image"></i></div>
+                <div>
+                  <div class="card-title">PIP 模板</div>
+                  <div class="card-desc">画中画模板图片</div>
+                </div>
+              </div>
+              <div class="form-group">
+                <div class="form-label">模板路径</div>
+                <input type="text" class="form-input" id="tpl-path-pip" placeholder="C:\Users\...\pip_template.png">
+              </div>
+              <div class="form-group">
+                <div class="form-label">区域配置</div>
+                <div class="preset-chips">
+                  <div class="preset-chip active" onclick="setPipRegions('3area')">三区域 (左/中/右)</div>
+                  <div class="preset-chip" onclick="setPipRegions('center')">仅中心</div>
+                  <div class="preset-chip" onclick="setPipRegions('custom')">自定义</div>
+                </div>
+              </div>
+              <div class="grid-3" id="pip-region-inputs">
+                <div class="form-group">
+                  <div class="form-label">中心 X,Y,W,H</div>
+                  <input type="text" class="form-input" id="pip-center" value="829,0,826,1453" placeholder="x,y,w,h">
+                </div>
+                <div class="form-group">
+                  <div class="form-label">左装饰 X,Y,W,H</div>
+                  <input type="text" class="form-input" id="pip-left" value="0,0,835,1453" placeholder="x,y,w,h">
+                </div>
+                <div class="form-group">
+                  <div class="form-label">右装饰 X,Y,W,H</div>
+                  <input type="text" class="form-input" id="pip-right" value="1655,0,808,1440" placeholder="x,y,w,h">
+                </div>
+              </div>
+              <button class="btn btn-ghost" onclick="previewLayout('pip')" style="margin-top:8px">
+                <i data-lucide="eye"></i> 预览布局
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <div class="card">
+              <div class="card-header">
+                <div class="card-icon green"><i data-lucide="settings"></i></div>
+                <div class="card-title">编码设置</div>
+              </div>
+              <div class="form-group">
+                <div class="form-label">预设</div>
+                <div class="preset-chips" id="presets-pip">
+                  <div class="preset-chip" data-codec="hevc_nvenc" data-bitrate="12000" onclick="applyPreset(this,'pip')">🎬 高质量</div>
+                  <div class="preset-chip active" data-codec="hevc_nvenc" data-bitrate="4500" onclick="applyPreset(this,'pip')">🎯 B站推荐</div>
+                  <div class="preset-chip" data-codec="hevc_nvenc" data-bitrate="6000" onclick="applyPreset(this,'pip')">⚡ 快速</div>
+                  <div class="preset-chip" data-codec="libx265" data-bitrate="3000" onclick="applyPreset(this,'pip')">📦 小文件</div>
+                </div>
+              </div>
+              <div class="form-row">
+                <div class="form-group">
+                  <div class="form-label">编码器</div>
+                  <select class="form-select" id="codec-pip">
+                    <option value="hevc_nvenc">HEVC NVENC</option>
+                    <option value="h264_nvenc">H264 NVENC</option>
+                    <option value="libx265">H265 软编码</option>
+                    <option value="libx264">H264 软编码</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <div class="form-label">码率</div>
+                  <input type="number" class="form-input" id="bitrate-pip" value="4500">
+                </div>
+              </div>
+            </div>
+
+            <div class="card">
+              <button class="btn btn-primary btn-block btn-lg" id="btn-start-pip" onclick="startProcess('pip')">
+                <i data-lucide="play"></i> 开始处理
+              </button>
+              <div class="progress-container hidden" id="progress-pip">
+                <div class="progress-bar-bg">
+                  <div class="progress-bar" id="progress-bar-pip" style="width:0%"></div>
+                </div>
+                <div class="progress-info">
+                  <span id="progress-text-pip">准备中...</span>
+                  <span class="progress-pct" id="progress-pct-pip">0%</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-header">
+                <div class="card-icon amber"><i data-lucide="scroll-text"></i></div>
+                <div class="card-title">处理日志</div>
+              </div>
+              <div class="log-output" id="log-pip">
+                <span class="log-comment">等待开始...</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══════════════ 横转竖 Mode ═══════════════ -->
+      <div class="mode-page" id="page-rotate">
+        <div class="grid-main">
+          <div>
+            <div class="card">
+              <div class="card-header">
+                <div class="card-icon blue"><i data-lucide="upload-cloud"></i></div>
+                <div>
+                  <div class="card-title">导入横屏视频</div>
+                  <div class="card-desc">将 16:9 视频旋转为 9:16 竖屏</div>
+                </div>
+              </div>
+              <div class="upload-zone" id="upload-rotate" onclick="document.getElementById('file-rotate').click()">
+                <input type="file" id="file-rotate" class="hidden" accept="video/*" onchange="handleUpload(this, 'rotate')">
+                <div class="upload-placeholder">
+                  <div class="upload-icon"><i data-lucide="film"></i></div>
+                  <div class="upload-text">拖放横屏视频到这里</div>
+                  <div class="upload-hint">自动旋转为竖屏 (1080×1920)</div>
+                </div>
+                <div class="upload-file-info hidden" id="file-info-rotate"></div>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-header">
+                <div class="card-icon coral"><i data-lucide="rotate-cw"></i></div>
+                <div class="card-title">旋转方向</div>
+              </div>
+              <div class="preset-chips">
+                <div class="preset-chip active" data-dir="cw" onclick="setRotateDir(this,'cw')">↻ 顺时针 90°</div>
+                <div class="preset-chip" data-dir="ccw" onclick="setRotateDir(this,'ccw')">↺ 逆时针 90°</div>
+              </div>
+              <div style="text-align:center;padding:24px;color:var(--text-3)">
+                <div style="font-size:64px;opacity:0.3">📱</div>
+                <p style="font-size:12px;margin-top:8px">1920×1080 → 1080×1920</p>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <div class="card">
+              <div class="card-header">
+                <div class="card-icon green"><i data-lucide="settings"></i></div>
+                <div class="card-title">编码设置</div>
+              </div>
+              <div class="form-group">
+                <div class="form-label">预设</div>
+                <div class="preset-chips" id="presets-rotate">
+                  <div class="preset-chip" data-codec="hevc_nvenc" data-bitrate="12000" onclick="applyPreset(this,'rotate')">🎬 高质量</div>
+                  <div class="preset-chip active" data-codec="hevc_nvenc" data-bitrate="4500" onclick="applyPreset(this,'rotate')">🎯 B站推荐</div>
+                  <div class="preset-chip" data-codec="hevc_nvenc" data-bitrate="6000" onclick="applyPreset(this,'rotate')">⚡ 快速</div>
+                </div>
+              </div>
+              <div class="form-row">
+                <div class="form-group">
+                  <div class="form-label">编码器</div>
+                  <select class="form-select" id="codec-rotate">
+                    <option value="hevc_nvenc">HEVC NVENC</option>
+                    <option value="h264_nvenc">H264 NVENC</option>
+                    <option value="libx265">H265 软编码</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <div class="form-label">码率</div>
+                  <input type="number" class="form-input" id="bitrate-rotate" value="4500">
+                </div>
+              </div>
+            </div>
+
+            <div class="card">
+              <button class="btn btn-primary btn-block btn-lg" id="btn-start-rotate" onclick="startProcess('rotate')">
+                <i data-lucide="play"></i> 开始处理
+              </button>
+              <div class="progress-container hidden" id="progress-rotate">
+                <div class="progress-bar-bg">
+                  <div class="progress-bar" id="progress-bar-rotate" style="width:0%"></div>
+                </div>
+                <div class="progress-info">
+                  <span id="progress-text-rotate">准备中...</span>
+                  <span class="progress-pct" id="progress-pct-rotate">0%</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-header">
+                <div class="card-icon amber"><i data-lucide="scroll-text"></i></div>
+                <div class="card-title">处理日志</div>
+              </div>
+              <div class="log-output" id="log-rotate">
+                <span class="log-comment">等待开始...</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══════════════ 格式转换 Mode ═══════════════ -->
+      <div class="mode-page" id="page-format">
+        <div class="grid-main">
+          <div>
+            <div class="card">
+              <div class="card-header">
+                <div class="card-icon blue"><i data-lucide="upload-cloud"></i></div>
+                <div>
+                  <div class="card-title">导入视频</div>
+                  <div class="card-desc">转换视频格式和编码</div>
+                </div>
+              </div>
+              <div class="upload-zone" id="upload-format" onclick="document.getElementById('file-format').click()">
+                <input type="file" id="file-format" class="hidden" accept="video/*" onchange="handleUpload(this, 'format')">
+                <div class="upload-placeholder">
+                  <div class="upload-icon"><i data-lucide="film"></i></div>
+                  <div class="upload-text">拖放视频文件到这里</div>
+                </div>
+                <div class="upload-file-info hidden" id="file-info-format"></div>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <div class="card">
+              <div class="card-header">
+                <div class="card-icon green"><i data-lucide="settings"></i></div>
+                <div class="card-title">转换设置</div>
+              </div>
+              <div class="form-group">
+                <div class="form-label">目标编码</div>
+                <select class="form-select" id="codec-format">
+                  <option value="libx264">H.264 (最兼容)</option>
+                  <option value="libx265">H.265 (高压缩)</option>
+                  <option value="hevc_nvenc">H.265 NVENC (GPU)</option>
+                  <option value="h264_nvenc">H.264 NVENC (GPU)</option>
+                  <option value="libvpx-vp9">VP9 (WebM)</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <div class="form-label">码率 (kbps)</div>
+                <input type="number" class="form-input" id="bitrate-format" value="6000">
+              </div>
+            </div>
+
+            <div class="card">
+              <button class="btn btn-primary btn-block btn-lg" id="btn-start-format" onclick="startProcess('format')">
+                <i data-lucide="play"></i> 开始转换
+              </button>
+              <div class="progress-container hidden" id="progress-format">
+                <div class="progress-bar-bg">
+                  <div class="progress-bar" id="progress-bar-format" style="width:0%"></div>
+                </div>
+                <div class="progress-info">
+                  <span id="progress-text-format">准备中...</span>
+                  <span class="progress-pct" id="progress-pct-format">0%</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-header">
+                <div class="card-icon amber"><i data-lucide="scroll-text"></i></div>
+                <div class="card-title">处理日志</div>
+              </div>
+              <div class="log-output" id="log-format">
+                <span class="log-comment">等待开始...</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══════════════ 命令预览 Mode ═══════════════ -->
+      <div class="mode-page" id="page-preview">
+        <div class="card">
+          <div class="card-header">
+            <div class="card-icon blue"><i data-lucide="terminal"></i></div>
+            <div>
+              <div class="card-title">FFmpeg 命令预览</div>
+              <div class="card-desc">查看当前设置对应的 FFmpeg 命令</div>
+            </div>
+          </div>
+          <div class="terminal" id="cmd-preview">
+            <span class="cmd-comment"># 选择模式并配置参数后，命令将在此显示</span>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <div class="card-icon green"><i data-lucide="info"></i></div>
+            <div class="card-title">当前配置总览</div>
+          </div>
+          <div id="config-overview" style="font-size:13px;color:var(--text-2);line-height:2">
+            加载中...
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ 流水线模式 ═══ -->
+    <div class="mode-page" id="page-pipeline">
+      <div class="page-header">
+        <div class="page-header-text">
+          <h2>流水线模式</h2>
+          <p>多步骤自动串联处理，按顺序执行选中的步骤</p>
+        </div>
+      </div>
+      <div class="content-grid">
+        <div class="card">
+          <div class="card-title">处理步骤（按顺序执行）</div>
+          <div style="display:flex;flex-direction:column;gap:10px;margin-top:12px">
+            <label class="toggle-row" style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--bg-1);border-radius:var(--radius-sm);cursor:pointer">
+              <input type="checkbox" id="pipe-step-rotate" style="accent-color:var(--accent)">
+              <i data-lucide="rotate-cw" style="width:18px;height:18px;color:var(--accent)"></i>
+              <span style="font-weight:600">① 横转竖</span>
+              <span style="color:var(--text-3);font-size:12px;margin-left:auto">顺时针90°</span>
+            </label>
+            <label class="toggle-row" style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--bg-1);border-radius:var(--radius-sm);cursor:pointer">
+              <input type="checkbox" id="pipe-step-frame" style="accent-color:var(--accent)">
+              <i data-lucide="frame" style="width:18px;height:18px;color:var(--accent)"></i>
+              <span style="font-weight:600">② 视频套框</span>
+              <span id="pipe-frame-status" style="color:var(--text-3);font-size:12px;margin-left:auto">未设置模板</span>
+            </label>
+            <label class="toggle-row" style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--bg-1);border-radius:var(--radius-sm);cursor:pointer">
+              <input type="checkbox" id="pipe-step-pip" style="accent-color:var(--accent)">
+              <i data-lucide="layout-grid" style="width:18px;height:18px;color:var(--accent)"></i>
+              <span style="font-weight:600">③ 画中画</span>
+              <span id="pipe-pip-status" style="color:var(--text-3);font-size:12px;margin-left:auto">未设置模板</span>
+            </label>
+          </div>
+          <p style="color:var(--text-3);font-size:12px;margin-top:12px">先在各模式页面设置好模板和区域，再回到流水线勾选步骤</p>
+        </div>
+        <div class="card">
+          <div class="upload-zone" id="upload-pipeline">
+            <i data-lucide="upload-cloud" style="width:32px;height:32px;color:var(--text-3)"></i>
+            <p>拖拽视频文件到此处，或点击选择</p>
+            <input type="file" accept="video/*" onchange="handleUpload(this,'pipeline')" style="display:none">
+          </div>
+          <div class="file-list" id="file-list-pipeline"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ 合并视频 ═══ -->
+    <div class="mode-page" id="page-merge">
+      <div class="page-header">
+        <div class="page-header-text">
+          <h2>合并视频</h2>
+          <p>多个视频文件合并为一个，使用 concat 拼接</p>
+        </div>
+      </div>
+      <div class="content-grid">
+        <div class="card">
+          <div class="card-title">视频文件列表</div>
+          <div class="upload-zone" id="upload-merge" style="margin-top:12px">
+            <i data-lucide="upload-cloud" style="width:32px;height:32px;color:var(--text-3)"></i>
+            <p>拖拽多个视频到此处（按添加顺序合并）</p>
+            <input type="file" accept="video/*" multiple onchange="handleUpload(this,'merge')" style="display:none">
+          </div>
+          <div class="file-list" id="file-list-merge"></div>
+          <div style="display:flex;gap:8px;margin-top:12px">
+            <button class="btn btn-ghost" onclick="clearFiles('merge')">
+              <i data-lucide="trash-2"></i> 清空
+            </button>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title">输出设置</div>
+          <div class="form-group">
+            <div class="form-label">输出文件名</div>
+            <input type="text" id="merge-output-name" class="form-input" value="merged.mp4" placeholder="merged.mp4">
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<script>
+/* ═══════════════════════════════════════════
+   State Management
+   ═══════════════════════════════════════════ */
+const state = {
+  mode: 'frame',
+  files: {},          // mode → uploaded file info
+  rotateDir: 'cw',
+  activeTask: null,   // current task_id
+  eventSource: null,  // SSE connection
+};
+
+/* ═══════════════════════════════════════════
+   Mode Switching
+   ═══════════════════════════════════════════ */
+const modeInfo = {
+  frame:    { title: '套框模式', desc: '将视频嵌入模板指定区域' },
+  pip:      { title: '画中画模式', desc: '多视频叠加到模板背景' },
+  rotate:   { title: '横转竖模式', desc: '16:9 横屏旋转为 9:16 竖屏' },
+  format:   { title: '格式转换', desc: '转换视频编码和格式' },
+  pipeline: { title: '流水线模式', desc: '多步骤自动串联处理' },
+  merge:    { title: '合并视频', desc: '多个视频合并为一个' },
+  preview:  { title: '命令预览', desc: '查看 FFmpeg 命令参数' },
+};
+
+function switchMode(mode) {
+  state.mode = mode;
+  // Update nav
+  document.querySelectorAll('.nav-item').forEach(el => {
+    el.classList.toggle('active', el.dataset.mode === mode);
+  });
+  // Update pages
+  document.querySelectorAll('.mode-page').forEach(el => {
+    el.classList.toggle('active', el.id === `page-${mode}`);
+  });
+  // Update topbar
+  const info = modeInfo[mode];
+  document.getElementById('topbar-title').textContent = info.title;
+  document.getElementById('topbar-subtitle').textContent = info.desc;
+  // Update preview if on preview page
+  if (mode === 'preview') updatePreview();
+  // Re-render icons
+  lucide.createIcons();
+}
+
+/* ═══════════════════════════════════════════
+   File Upload with Drag & Drop
+   ═══════════════════════════════════════════ */
+function initUploadZones() {
+  document.querySelectorAll('.upload-zone').forEach(zone => {
+    zone.addEventListener('dragover', e => {
+      e.preventDefault();
+      zone.classList.add('dragover');
+    });
+    zone.addEventListener('dragleave', () => {
+      zone.classList.remove('dragover');
+    });
+    zone.addEventListener('drop', e => {
+      e.preventDefault();
+      zone.classList.remove('dragover');
+      const files = e.dataTransfer.files;
+      if (files.length > 0) {
+        const mode = zone.id.replace('upload-', '');
+        const input = document.getElementById(`file-${mode}`);
+        input.files = files;
+        handleUpload(input, mode);
+      }
+    });
+  });
+}
+
+async function handleUpload(input, mode) {
+  // Merge mode: handle multiple files
+  if (mode === 'merge') {
+    for (const file of input.files) {
+      const formData = new FormData();
+      formData.append('file', file);
+      try {
+        const resp = await fetch('/api/upload', { method: 'POST', body: formData });
+        const data = await resp.json();
+        if (data.error) { alert(`${file.name}: ${data.error}`); continue; }
+        addMergeFile(data);
+      } catch(e) { alert(`上传失败: ${file.name}`); }
+    }
+    return;
+  }
+
+  const file = input.files[0];
+  if (!file) return;
+
+  const zone = document.getElementById(`upload-${mode}`);
+  const placeholder = zone.querySelector('.upload-placeholder');
+  const infoEl = document.getElementById(`file-info-${mode}`);
+
+  // Show uploading state
+  placeholder.classList.add('hidden');
+  infoEl.classList.remove('hidden');
+  infoEl.innerHTML = `
+    <div class="upload-file-icon"><i data-lucide="loader" class="spin"></i></div>
+    <div>
+      <div class="upload-file-name">${file.name}</div>
+      <div class="upload-file-meta">上传中... ${(file.size/1048576).toFixed(1)} MB</div>
+    </div>
+  `;
+  zone.classList.add('has-file');
+  lucide.createIcons();
+
+  // Upload
+  const formData = new FormData();
+  formData.append('file', file);
+
+  try {
+    const resp = await fetch('/api/upload', { method: 'POST', body: formData });
+    const data = await resp.json();
+    if (data.error) throw new Error(data.error);
+
+    state.files[mode] = data;
+    const dur = data.duration || 0;
+    const durStr = `${Math.floor(dur/60)}:${Math.floor(dur%60).toString().padStart(2,'0')}`;
+    infoEl.innerHTML = `
+      <div class="upload-file-icon"><i data-lucide="check-circle"></i></div>
+      <div>
+        <div class="upload-file-name">${data.filename}</div>
+        <div class="upload-file-meta">
+          ${data.width}×${data.height} · ${data.codec} · ${durStr} · ${(data.size/1048576).toFixed(1)} MB
+        </div>
+      </div>
+      <div class="upload-file-remove" onclick="removeFile('${mode}')">
+        <i data-lucide="x"></i>
+      </div>
+    `;
+    lucide.createIcons();
+    updatePreview();
+  } catch (err) {
+    infoEl.innerHTML = `
+      <div class="upload-file-icon" style="background:var(--coral-glow);color:var(--coral)">
+        <i data-lucide="alert-circle"></i>
+      </div>
+      <div>
+        <div class="upload-file-name" style="color:var(--coral)">上传失败</div>
+        <div class="upload-file-meta">${err.message}</div>
+      </div>
+    `;
+    lucide.createIcons();
+  }
+}
+
+function removeFile(mode) {
+  delete state.files[mode];
+  const zone = document.getElementById(`upload-${mode}`);
+  if (!zone) return;
+  const placeholder = zone.querySelector('.upload-placeholder');
+  const infoEl = document.getElementById(`file-info-${mode}`);
+  if (placeholder) placeholder.classList.remove('hidden');
+  if (infoEl) infoEl.classList.add('hidden');
+  zone.classList.remove('has-file');
+  const fileInput = document.getElementById(`file-${mode}`);
+  if (fileInput) fileInput.value = '';
+  updatePreview();
+}
+
+function clearFiles(mode) {
+  if (mode === 'merge') {
+    state.mergeFiles = [];
+    renderMergeFiles();
+  } else {
+    removeFile(mode);
+  }
+}
+
+/* ═══════════════════════════════════════════
+   Presets
+   ═══════════════════════════════════════════ */
+function applyPreset(chip, mode) {
+  const container = chip.parentElement;
+  container.querySelectorAll('.preset-chip').forEach(c => c.classList.remove('active'));
+  chip.classList.add('active');
+  const codec = chip.dataset.codec;
+  const bitrate = chip.dataset.bitrate;
+  document.getElementById(`codec-${mode}`).value = codec;
+  document.getElementById(`bitrate-${mode}`).value = bitrate;
+  updatePreview();
+}
+
+/* ═══════════════════════════════════════════
+   PIP Regions
+   ═══════════════════════════════════════════ */
+function setPipRegions(type) {
+  const chips = document.querySelectorAll('#page-pip .preset-chips .preset-chip');
+  chips.forEach(c => c.classList.remove('active'));
+  event.target.classList.add('active');
+  
+  if (type === '3area') {
+    document.getElementById('pip-center').value = '829,0,826,1453';
+    document.getElementById('pip-left').value = '0,0,835,1453';
+    document.getElementById('pip-right').value = '1655,0,808,1440';
+  } else if (type === 'center') {
+    document.getElementById('pip-center').value = '0,0,1920,1080';
+    document.getElementById('pip-left').value = '';
+    document.getElementById('pip-right').value = '';
+  }
+}
+
+/* ═══════════════════════════════════════════
+   Rotate Direction
+   ═══════════════════════════════════════════ */
+function setRotateDir(chip, dir) {
+  document.querySelectorAll('[data-dir]').forEach(c => c.classList.remove('active'));
+  chip.classList.add('active');
+  state.rotateDir = dir;
+}
+
+/* ═══════════════════════════════════════════
+   Start Processing
+   ═══════════════════════════════════════════ */
+async function startProcess(mode) {
+  const file = state.files[mode];
+  if (!file) {
+    alert('请先上传视频文件');
+    return;
+  }
+
+  const codec = document.getElementById(`codec-${mode}`).value;
+  const bitrate = parseInt(document.getElementById(`bitrate-${mode}`).value) || 4500;
+
+  let params = {
+    video: file.path,
+    output_name: `${file.filename.replace(/\.[^.]+$/, '')}_${mode}.mp4`,
+    codec, bitrate
+  };
+
+  if (mode === 'frame') {
+    const tpl = document.getElementById('tpl-path-frame').value;
+    if (!tpl) { alert('请输入模板路径'); return; }
+    params.template = tpl;
+    params.roi = [
+      parseInt(document.getElementById('roi-x').value),
+      parseInt(document.getElementById('roi-y').value),
+      parseInt(document.getElementById('roi-w').value),
+      parseInt(document.getElementById('roi-h').value)
+    ];
+  } else if (mode === 'pip') {
+    const tpl = document.getElementById('tpl-path-pip').value;
+    if (!tpl) { alert('请输入模板路径'); return; }
+    params.template = tpl;
+    const parseRegion = (str) => {
+      if (!str) return null;
+      const [x,y,w,h] = str.split(',').map(Number);
+      return {x,y,w,h};
+    };
+    params.regions = {
+      center: parseRegion(document.getElementById('pip-center').value),
+      left: parseRegion(document.getElementById('pip-left').value),
+      right: parseRegion(document.getElementById('pip-right').value),
+    };
+  } else if (mode === 'rotate') {
+    params.direction = state.rotateDir;
+  } else if (mode === 'format') {
+    params.target_codec = document.getElementById('codec-format').value;
+  } else if (mode === 'pipeline') {
+    // Pipeline uses dedicated endpoint
+    startPipeline();
+    return;
+  } else if (mode === 'merge') {
+    // Merge uses dedicated endpoint
+    startMerge();
+    return;
+  }
+
+  // Disable button
+  const btn = document.getElementById(`btn-start-${mode}`);
+  btn.disabled = true;
+  btn.innerHTML = '<i data-lucide="loader" class="spin"></i> 处理中...';
+  lucide.createIcons();
+
+  // Show progress
+  document.getElementById(`progress-${mode}`).classList.remove('hidden');
+  updateStatusBadge('processing', '处理中');
+
+  try {
+    const resp = await fetch('/api/process', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode, params })
+    });
+    const data = await resp.json();
+    if (data.error) throw new Error(data.error);
+
+    state.activeTask = data.task_id;
+    listenProgress(data.task_id, mode);
+  } catch (err) {
+    alert(`启动失败: ${err.message}`);
+    resetButton(mode);
+  }
+}
+
+/* ═══════════════════════════════════════════
+   SSE Progress
+   ═══════════════════════════════════════════ */
+function listenProgress(taskId, mode) {
+  if (state.eventSource) state.eventSource.close();
+  const es = new EventSource(`/api/progress/${taskId}`);
+  state.eventSource = es;
+
+  es.onmessage = (e) => {
+    const data = JSON.parse(e.data);
+    const pct = Math.round(data.progress || 0);
+
+    // Update progress bar
+    document.getElementById(`progress-bar-${mode}`).style.width = `${pct}%`;
+    document.getElementById(`progress-pct-${mode}`).textContent = `${pct}%`;
+
+    // Update text
+    let text = '处理中...';
+    if (data.status === 'done') text = '✅ 完成';
+    else if (data.status === 'error') text = '❌ 失败';
+    else if (data.eta) text = `⏳ ETA ${data.eta}`;
+    document.getElementById(`progress-text-${mode}`).textContent = text;
+
+    // Update log
+    if (data.log && data.log.length > 0) {
+      const logEl = document.getElementById(`log-${mode}`);
+      logEl.innerHTML = data.log.map(line => {
+        let cls = '';
+        if (line.includes('✅')) cls = 'log-success';
+        else if (line.includes('❌')) cls = 'log-error';
+        else if (line.includes('⏳') || line.includes('📋')) cls = 'log-info';
+        else if (line.includes('⚠️')) cls = 'log-warn';
+        return `<div class="${cls}">${line}</div>`;
+      }).join('');
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    // Done or error
+    if (data.status === 'done') {
+      es.close();
+      state.eventSource = null;
+      resetButton(mode);
+      updateStatusBadge('done', '完成');
+      if (data.output_file) {
+        const logEl = document.getElementById(`log-${mode}`);
+        logEl.innerHTML += `<div class="log-success" style="margin-top:8px">
+          📥 <a href="/api/download/${data.output_file}" style="color:var(--accent)" download>点击下载: ${data.output_file}</a>
+          (${(data.output_size/1048576).toFixed(1)} MB)
+        </div>`;
+      }
+    } else if (data.status === 'error') {
+      es.close();
+      state.eventSource = null;
+      resetButton(mode);
+      updateStatusBadge('error', '错误');
+    }
+  };
+
+  es.onerror = () => {
+    es.close();
+    state.eventSource = null;
+  };
+}
+
+function resetButton(mode) {
+  const btn = document.getElementById(`btn-start-${mode}`);
+  btn.disabled = false;
+  btn.innerHTML = '<i data-lucide="play"></i> 开始处理';
+  lucide.createIcons();
+}
+
+/* ═══════════════════════════════════════════
+   Status Badge
+   ═══════════════════════════════════════════ */
+function updateStatusBadge(status, text) {
+  const badge = document.getElementById('status-badge');
+  badge.className = `status-badge ${status}`;
+  const icons = { idle: 'circle', ready: 'circle', processing: 'loader', done: 'check-circle', error: 'alert-circle' };
+  badge.innerHTML = `<i data-lucide="${icons[status] || 'circle'}" style="width:8px;height:8px"></i> ${text}`;
+  if (status === 'processing') badge.querySelector('i').classList.add('spin');
+  lucide.createIcons();
+}
+
+/* ═══════════════════════════════════════════
+   Command Preview
+   ═══════════════════════════════════════════ */
+function updatePreview() {
+  const mode = state.mode;
+  const file = state.files[mode];
+  const codec = document.getElementById(`codec-${mode === 'preview' ? 'frame' : mode}`)?.value || 'hevc_nvenc';
+  const bitrate = document.getElementById(`bitrate-${mode === 'preview' ? 'frame' : mode}`)?.value || 4500;
+
+  let cmd = '';
+  const input = file ? file.filename : 'input.mp4';
+
+  if (mode === 'frame' || mode === 'preview') {
+    const roi = [
+      document.getElementById('roi-x')?.value || 66,
+      document.getElementById('roi-y')?.value || 51,
+      document.getElementById('roi-w')?.value || 1447,
+      document.getElementById('roi-h')?.value || 827
+    ];
+    cmd = `<span class="cmd-keyword">ffmpeg</span> <span class="cmd-flag">-y</span> <span class="cmd-flag">-loop</span> <span class="cmd-value">1</span> <span class="cmd-flag">-i</span> <span class="cmd-path">template.png</span> \\
+  <span class="cmd-flag">-i</span> <span class="cmd-path">${input}</span> \\
+  <span class="cmd-flag">-filter_complex</span> <span class="cmd-value">"
+    [0:v]scale=1920:1080[bg];
+    [1:v]scale=${roi[2]}:${roi[3]}:force_original_aspect_ratio=decrease[fg];
+    [bg][fg]overlay=${roi[0]}:${roi[1]},format=yuv420p[out]
+  "</span> \\
+  <span class="cmd-flag">-map</span> <span class="cmd-value">[out]</span> <span class="cmd-flag">-map</span> <span class="cmd-value">1:a?</span> \\
+  <span class="cmd-flag">-c:v</span> <span class="cmd-value">${codec}</span> <span class="cmd-flag">-b:v</span> <span class="cmd-value">${bitrate}k</span> \\
+  <span class="cmd-flag">-c:a</span> <span class="cmd-value">flac</span> <span class="cmd-flag">-ar</span> <span class="cmd-value">96000</span> \\
+  <span class="cmd-flag">-movflags</span> <span class="cmd-value">+faststart</span> \\
+  <span class="cmd-path">output.mp4</span>`;
+  } else if (mode === 'pip') {
+    cmd = `<span class="cmd-keyword">ffmpeg</span> <span class="cmd-flag">-y</span> <span class="cmd-flag">-loop</span> <span class="cmd-value">1</span> <span class="cmd-flag">-i</span> <span class="cmd-path">template.png</span> \\
+  <span class="cmd-flag">-i</span> <span class="cmd-path">${input}</span> \\
+  <span class="cmd-flag">-stream_loop</span> <span class="cmd-value">-1</span> <span class="cmd-flag">-i</span> <span class="cmd-path">left.mp4</span> \\
+  <span class="cmd-flag">-stream_loop</span> <span class="cmd-value">-1</span> <span class="cmd-flag">-i</span> <span class="cmd-path">right.mp4</span> \\
+  <span class="cmd-flag">-filter_complex</span> <span class="cmd-value">"...PIP滤镜链..."</span> \\
+  <span class="cmd-flag">-c:v</span> <span class="cmd-value">${codec}</span> <span class="cmd-flag">-b:v</span> <span class="cmd-value">${bitrate}k</span> \\
+  <span class="cmd-flag">-c:a</span> <span class="cmd-value">flac</span> <span class="cmd-flag">-ar</span> <span class="cmd-value">96000</span> \\
+  <span class="cmd-path">output.mp4</span>`;
+  } else if (mode === 'rotate') {
+    const dir = state.rotateDir;
+    const t = dir === 'cw' ? 'transpose=1' : 'transpose=2';
+    cmd = `<span class="cmd-keyword">ffmpeg</span> <span class="cmd-flag">-y</span> <span class="cmd-flag">-i</span> <span class="cmd-path">${input}</span> \\
+  <span class="cmd-flag">-vf</span> <span class="cmd-value">"${t},scale=1080:1920,format=yuv420p"</span> \\
+  <span class="cmd-flag">-c:v</span> <span class="cmd-value">${codec}</span> <span class="cmd-flag">-b:v</span> <span class="cmd-value">${bitrate}k</span> \\
+  <span class="cmd-flag">-c:a</span> <span class="cmd-value">flac</span> <span class="cmd-flag">-ar</span> <span class="cmd-value">96000</span> \\
+  <span class="cmd-path">output.mp4</span>`;
+  } else if (mode === 'format') {
+    const tc = document.getElementById('codec-format')?.value || 'libx264';
+    cmd = `<span class="cmd-keyword">ffmpeg</span> <span class="cmd-flag">-y</span> <span class="cmd-flag">-i</span> <span class="cmd-path">${input}</span> \\
+  <span class="cmd-flag">-c:v</span> <span class="cmd-value">${tc}</span> <span class="cmd-flag">-b:v</span> <span class="cmd-value">${bitrate}k</span> \\
+  <span class="cmd-flag">-c:a</span> <span class="cmd-value">aac</span> <span class="cmd-flag">-b:a</span> <span class="cmd-value">192k</span> \\
+  <span class="cmd-path">output.mp4</span>`;
+  }
+
+  const previewEl = document.getElementById('cmd-preview');
+  if (previewEl) previewEl.innerHTML = cmd;
+
+  // Update config overview
+  updateConfigOverview();
+}
+
+function updateConfigOverview() {
+  const el = document.getElementById('config-overview');
+  if (!el) return;
+  const mode = state.mode;
+  const codec = document.getElementById(`codec-${mode === 'preview' ? 'frame' : mode}`)?.value || 'hevc_nvenc';
+  const bitrate = document.getElementById(`bitrate-${mode === 'preview' ? 'frame' : mode}`)?.value || 4500;
+  const file = state.files[mode === 'preview' ? 'frame' : mode];
+
+  el.innerHTML = `
+    <div style="display:grid;grid-template-columns:auto 1fr;gap:4px 16px">
+      <span style="color:var(--text-3)">模式</span><span>${modeInfo[mode]?.title || mode}</span>
+      <span style="color:var(--text-3)">编码器</span><span>${codec}</span>
+      <span style="color:var(--text-3)">码率</span><span>${bitrate} kbps</span>
+      <span style="color:var(--text-3)">输入</span><span>${file ? file.filename : '(未选择)'}</span>
+      <span style="color:var(--text-3)">分辨率</span><span>${file ? file.width+'×'+file.height : '-'}</span>
+      <span style="color:var(--text-3)">时长</span><span>${file ? Math.floor(file.duration/60)+':'+Math.floor(file.duration%60).toString().padStart(2,'0') : '-'}</span>
+    </div>
+  `;
+}
+
+/* ═══════════════════════════════════════════
+   Layout Preview (布局预览)
+   ═══════════════════════════════════════════ */
+async function previewLayout(mode) {
+  const tpl = mode === 'frame'
+    ? document.getElementById('tpl-path-frame')?.value
+    : document.getElementById('tpl-path-pip')?.value;
+  if (!tpl) { alert('请先填写模板路径'); return; }
+
+  let regions = {};
+  if (mode === 'frame') {
+    regions.video = [
+      parseInt(document.getElementById('roi-x')?.value || 0),
+      parseInt(document.getElementById('roi-y')?.value || 0),
+      parseInt(document.getElementById('roi-w')?.value || 1920),
+      parseInt(document.getElementById('roi-h')?.value || 1080)
+    ];
+  } else {
+    const c = (document.getElementById('pip-center')?.value || '0,0,1920,1080').split(',').map(Number);
+    const l = (document.getElementById('pip-left')?.value || '0,0,400,800').split(',').map(Number);
+    const r = (document.getElementById('pip-right')?.value || '1520,0,400,800').split(',').map(Number);
+    regions.center = {x:c[0],y:c[1],w:c[2],h:c[3]};
+    regions.left = {x:l[0],y:l[1],w:l[2],h:l[3]};
+    regions.right = {x:r[0],y:r[1],w:r[2],h:r[3]};
+  }
+
+  try {
+    const res = await fetch('/api/preview-layout', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({template: tpl, regions})
+    });
+    const data = await res.json();
+    if (data.error) { alert(data.error); return; }
+    // Show in modal
+    const modal = document.createElement('div');
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.8);z-index:9999;display:flex;align-items:center;justify-content:center;cursor:pointer';
+    modal.onclick = () => modal.remove();
+    const img = document.createElement('img');
+    img.src = data.image;
+    img.style.cssText = 'max-width:90vw;max-height:90vh;border-radius:12px;box-shadow:0 8px 48px rgba(0,0,0,0.5)';
+    modal.appendChild(img);
+    document.body.appendChild(modal);
+    lucide.createIcons();
+  } catch(e) { alert('预览失败: ' + e.message); }
+}
+
+/* ═══════════════════════════════════════════
+   Pipeline (流水线)
+   ═══════════════════════════════════════════ */
+async function startPipeline() {
+  const file = state.files.pipeline;
+  if (!file) { alert('请先上传视频'); return; }
+
+  const steps = [];
+  if (document.getElementById('pipe-step-rotate')?.checked) steps.push('rotate');
+  if (document.getElementById('pipe-step-frame')?.checked) steps.push('frame');
+  if (document.getElementById('pipe-step-pip')?.checked) steps.push('pip');
+  if (steps.length === 0) { alert('请勾选至少一个步骤'); return; }
+
+  const codec = document.getElementById('codec-frame')?.value || 'hevc_nvenc';
+  const bitrate = parseInt(document.getElementById('bitrate-frame')?.value || 4500);
+
+  const params = { codec, bitrate };
+  // Frame params
+  params.template = document.getElementById('tpl-path-frame')?.value || '';
+  params.roi = [
+    parseInt(document.getElementById('roi-x')?.value || 66),
+    parseInt(document.getElementById('roi-y')?.value || 51),
+    parseInt(document.getElementById('roi-w')?.value || 1447),
+    parseInt(document.getElementById('roi-h')?.value || 827)
+  ];
+  // PIP params
+  params.regions = parsePipRegions();
+  params.direction = state.rotateDir || 'cw';
+
+  const res = await fetch('/api/pipeline', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({video: file.path, steps, params})
+  });
+  const data = await res.json();
+  if (data.error) { alert(data.error); return; }
+  listenProgress(data.task_id, 'pipeline');
+}
+
+function parsePipRegions() {
+  const c = (document.getElementById('pip-center')?.value || '829,0,826,1453').split(',').map(Number);
+  const l = (document.getElementById('pip-left')?.value || '0,0,835,1453').split(',').map(Number);
+  const r = (document.getElementById('pip-right')?.value || '1655,0,808,1440').split(',').map(Number);
+  return {
+    center: {x:c[0],y:c[1],w:c[2],h:c[3]},
+    left: {x:l[0],y:l[1],w:l[2],h:l[3]},
+    right: {x:r[0],y:r[1],w:r[2],h:r[3]}
+  };
+}
+
+/* ═══════════════════════════════════════════
+   Merge (合并视频)
+   ═══════════════════════════════════════════ */
+async function startMerge() {
+  const files = state.mergeFiles || [];
+  if (files.length < 2) { alert('请上传至少2个视频'); return; }
+
+  const outName = document.getElementById('merge-output-name')?.value || 'merged.mp4';
+  const res = await fetch('/api/merge', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      videos: files.map(f => f.path),
+      output_name: outName
+    })
+  });
+  const data = await res.json();
+  if (data.error) { alert(data.error); return; }
+  listenProgress(data.task_id, 'merge');
+}
+
+// Merge file management
+if (!state.mergeFiles) state.mergeFiles = [];
+
+function addMergeFile(fileInfo) {
+  state.mergeFiles.push(fileInfo);
+  renderMergeFiles();
+}
+
+function renderMergeFiles() {
+  const list = document.getElementById('file-list-merge');
+  if (!list) return;
+  list.innerHTML = state.mergeFiles.map((f, i) => `
+    <div class="file-item" style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg-1);border-radius:var(--radius-sm);margin-top:6px">
+      <span style="color:var(--text-3);font-size:12px">${i+1}.</span>
+      <span style="flex:1;font-size:13px">${f.filename}</span>
+      <span style="color:var(--text-3);font-size:12px">${(f.size/1048576).toFixed(1)}MB</span>
+      <button onclick="state.mergeFiles.splice(${i},1);renderMergeFiles()" style="background:none;border:none;color:var(--coral);cursor:pointer">x</button>
+    </div>
+  `).join('');
+}
+
+/* ═══════════════════════════════════════════
+   Init
+   ═══════════════════════════════════════════ */
+document.addEventListener('DOMContentLoaded', () => {
+  lucide.createIcons();
+  initUploadZones();
+  updatePreview();
+
+  // Bind codec/bitrate changes to preview
+  ['frame','pip','rotate','format'].forEach(mode => {
+    const codecEl = document.getElementById(`codec-${mode}`);
+    const bitrateEl = document.getElementById(`bitrate-${mode}`);
+    if (codecEl) codecEl.addEventListener('change', updatePreview);
+    if (bitrateEl) bitrateEl.addEventListener('input', updatePreview);
+  });
+
+  // Keyboard shortcut: 1-6 to switch modes
+  document.addEventListener('keydown', e => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+    const modes = ['frame', 'pip', 'rotate', 'format', 'pipeline', 'merge'];
+    const num = parseInt(e.key);
+    if (num >= 1 && num <= modes.length) switchMode(modes[num - 1]);
+  });
+});
+</script>
+</body>
+</html>
